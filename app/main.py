@@ -24,6 +24,9 @@ async def lifespan(_: FastAPI):
     db.init()
     workers.start()
     log.info("alert-ir-bot up. dry_run=%s poll=%ss alert_chat=%s", config.DRY_RUN, config.LARK_POLL_INTERVAL_SEC, config.ALERT_CHAT_ID)
+    for name in ("LARK_VERIFICATION_TOKEN", "PD_STATUS_SECRET"):
+        if not getattr(config, name):
+            log.warning("%s is empty: the matching endpoint accepts unauthenticated requests", name)
     yield
 
 
@@ -58,7 +61,10 @@ async def lark_events(request: Request, background: BackgroundTasks):
         raise HTTPException(status_code=401, detail="bad verification token")
     event_type = (body.get("header") or {}).get("event_type", "")
     if event_type == "card.action.trigger":
-        # synchronous on purpose: the response body is the repainted card (Lark waits up to 3 s)
+        if not config.LARK_VERIFICATION_TOKEN:
+            # a click makes the bot write to PagerDuty; never accept one that nothing authenticated
+            log.error("card click refused: LARK_VERIFICATION_TOKEN is empty, so the request could be forged")
+            return {"toast": {"type": "error", "content": "Bot misconfigured: no verification token"}}
         return pipeline.handle_card_action(body.get("event") or {})
     if event_type != "im.message.receive_v1":
         log.info("lark event %s ignored", event_type or "(no type)")

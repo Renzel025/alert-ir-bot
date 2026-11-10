@@ -493,7 +493,23 @@ def handle_pd_status(body: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             log.warning("pd status: could not read alerts of %s from PagerDuty: %s", pd_id, e)
 
-    # 2) paint (or first post) the one card for this PagerDuty incident
+    # 2) paint (or first post) the one card for this PagerDuty incident.
+    #    An id we have never seen must exist in PagerDuty: the status secret alone must not be enough
+    #    to make the bot post cards for made-up incidents. (Network trouble is not a 404: we still paint.)
+    if row is None and pd_id and status in _PD_STATE:
+        try:
+            real = pagerduty.get_incident(pd_id)
+            for k_body, k_pd in (("title", "title"), ("html_url", "html_url"), ("urgency", "urgency"), ("service", "service")):
+                if not body.get(k_body) and real.get(k_pd):      # fill gaps Zoho left from PagerDuty itself
+                    body[k_body] = real[k_pd]
+        except pagerduty.PagerDutyError as e:
+            if "HTTP 404" in str(e):
+                log.warning("pd status %s for unknown PagerDuty incident %s rejected (not found in PagerDuty)", status, pd_id)
+                out["ok"], out["card"], out["incident_id"] = False, "rejected (incident not found in PagerDuty)", None
+                return out
+            log.warning("pd status: could not verify %s with PagerDuty (%s); painting anyway", pd_id, e)
+        except Exception as e:  # noqa: BLE001
+            log.warning("pd status: could not verify %s with PagerDuty (%s); painting anyway", pd_id, e)
     if status == "triggered" and row and row.get("state") == "resolved":
         # PagerDuty never re-triggers a resolved incident id (a new alert gets a new id and a new card),
         # so this is a late or replayed event. Only an explicit 'reopened' takes a card back to red.

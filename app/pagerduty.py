@@ -53,6 +53,25 @@ def trigger(dedup_key: str, summary: str, severity: str, custom_details: Dict[st
 def resolve(dedup_key: str) -> Dict[str, Any]:
     return _send("resolve", dedup_key)
 
+def get_incident(incident_id: str) -> Dict[str, Any]:
+    """Read one incident (REST). Used to confirm an id exists before the bot paints a card for an
+    incident it has never seen, so a forged /pagerduty/status call cannot create fake cards.
+    Raises PagerDutyError with 'HTTP 404' for an unknown id."""
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] pagerduty get_incident %s", incident_id)
+        return {"id": incident_id}
+    if not config.PD_API_KEY:
+        raise PagerDutyError("PD_API_KEY not set")
+    r = requests.get(
+        f"https://api.pagerduty.com/incidents/{incident_id}",
+        headers={"Authorization": f"Token token={config.PD_API_KEY}", "Accept": "application/vnd.pagerduty+json;version=2"},
+        timeout=config.HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise PagerDutyError(f"get_incident: HTTP {r.status_code} {r.text[:300]}")
+    return r.json()["incident"]
+
+
 def get_incident_alerts(incident_id: str) -> List[Dict[str, Any]]:
     """The alerts behind a PagerDuty incident (REST). This is where our link back lives: on a service
     with alerts enabled the incident's own `incident_key` is null (verified 2026-11-09), while each

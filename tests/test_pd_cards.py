@@ -48,6 +48,7 @@ lark_client.post_card = fake_post_card
 lark_client.update_card = fake_update_card
 pagerduty.set_status = lambda incident_id, status: dict(PD_INC, status=status)
 pagerduty.snooze = lambda incident_id, minutes: dict(PD_INC, status="acknowledged")
+pagerduty.get_incident = lambda incident_id: dict(PD_INC, id=incident_id)   # every test id "exists"
 
 
 def _buttons(card):
@@ -237,6 +238,18 @@ def test_missing_incident_key_is_recovered_from_pagerduty():
     assert "ai_summary" in results                       # the resolved note feeds past_cases
     assert db.get_pd_card("Q7REAL00000001")["incident_id"] == inc["id"]
     assert "note for resolved" in _ai_note(LARK_CALLS[-1]["card"])
+
+
+def test_forged_status_for_nonexistent_incident_posts_nothing():
+    def not_found(incident_id):
+        raise pagerduty.PagerDutyError("get_incident: HTTP 404 Incident Not Found")
+    real = pagerduty.get_incident
+    pagerduty.get_incident = not_found
+    n = len(LARK_CALLS)
+    out = zoho("triggered", incident_id="QFAKE000000001", html_url="https://x.pagerduty.com/incidents/QFAKE000000001")
+    pagerduty.get_incident = real
+    assert out["ok"] is False and out["card"].startswith("rejected"), out
+    assert len(LARK_CALLS) == n and db.get_pd_card("QFAKE000000001") is None
 
 
 def test_unknown_event_is_skipped():
