@@ -13,19 +13,17 @@ services:
     ports:
       - "127.0.0.1:8080:8080"          # only Caddy talks to it; not exposed to the internet directly
 
-  # HTTPS for Lark's event callback + Zoho's webhook. Caddy gets the certificate itself.
-  caddy:
-    image: caddy:2
-    container_name: alert-ir-caddy
+  # HTTPS for Lark's event callback + Zoho's webhook, with NO inbound ports (the security group may not
+  # open 80/443 to the internet). cloudflared dials out to Cloudflare; Cloudflare terminates TLS for
+  # alert-bot.<domain> and forwards down the tunnel to bot:8080. The tunnel's public hostname is set in
+  # the Cloudflare dashboard (Zero Trust → Networks → Tunnels); TUNNEL_TOKEN lives in .env.
+  # The Caddy alternative (deploy/Caddyfile) only fits a server that may open 80/443.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: alert-ir-tunnel
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - bot
