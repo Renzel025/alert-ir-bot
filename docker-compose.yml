@@ -13,14 +13,19 @@ services:
     ports:
       - "127.0.0.1:8080:8080"          # only Caddy talks to it; not exposed to the internet directly
 
-  # HTTPS for Lark's event callback + Zoho's webhook. Caddy gets the certificate itself.
+  # HTTPS for Lark's event callback + Zoho's webhook, on 8443 only (the security group does not open 80/443).
+  # caddybuilds/caddy-namecheap = official caddy image + the caddy-dns/namecheap module, so Caddy can get the
+  # Let's Encrypt certificate with the DNS challenge instead of needing inbound 80/443.
   caddy:
-    image: caddy:2
+    image: caddybuilds/caddy-namecheap
     container_name: alert-ir-caddy
     restart: unless-stopped
+    environment:                      # read from the same .env (compose interpolates it); see .env.example
+      NAMECHEAP_API_KEY: ${NAMECHEAP_API_KEY}
+      NAMECHEAP_API_USER: ${NAMECHEAP_API_USER}
+      NAMECHEAP_CLIENT_IP: ${NAMECHEAP_CLIENT_IP}
     ports:
-      - "80:80"
-      - "443:443"
+      - "8443:8443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

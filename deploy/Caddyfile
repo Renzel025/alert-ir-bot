@@ -1,5 +1,20 @@
-# Replace with the DNS name whose A record points at the ECS public IP (ports 80 + 443 open).
-# Caddy fetches and renews the Let's Encrypt certificate itself; Lark and Zoho need a real certificate.
-alert-ir.example.com {
+# HTTPS on port 8443 only (the ECS security group opens 8443/8443, not 80/443).
+# Let's Encrypt can never connect to 8443, so Caddy proves the domain with the DNS challenge:
+# it writes a TXT record through the Namecheap API, then deletes it. Nothing inbound is needed for that.
+# Replace the hostname with the A record that points at the ECS public IP. Values come from .env.
+{
+    # Lark / Zoho will call https://<host>:8443/... ; no http:// listener at all.
+    auto_https disable_redirects
+}
+
+alert-ir.example.com:8443 {
+    tls {
+        dns namecheap {
+            api_key {env.NAMECHEAP_API_KEY}
+            user {env.NAMECHEAP_API_USER}
+            api_endpoint https://api.namecheap.com/xml.response
+            client_ip {env.NAMECHEAP_CLIENT_IP}
+        }
+    }
     reverse_proxy bot:8080
 }
