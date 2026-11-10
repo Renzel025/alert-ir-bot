@@ -1,0 +1,20 @@
+# Alert policy (temporary home; moves to Lark Base later).
+# Lookup order: defaults -> first matching rule -> severity_always_page (hard floor).
+
+defaults:
+  always_page: false
+  check_person: ""            # Lark open_id (ou_...) of the person to tag when the AI says "can wait"
+  check_person_name: ""       # display name for the @mention
+  wait_minutes: 5             # N min before silence = page
+
+# Severities that always page, whatever the rule says.
+severity_always_page: ["P0", "critical"]
+
+# First match wins. `match` is a case-insensitive regex on the rule name.
+rules:
+  - match: "payment|deposit|withdraw|login"
+    always_page: true
+  - match: "provider.*drop"
+    check_person: ""          # ou_...
+    check_person_name: ""
+    wait_minutes: 10

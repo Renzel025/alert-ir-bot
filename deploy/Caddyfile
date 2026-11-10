@@ -1,0 +1,5 @@
+# Replace with the DNS name whose A record points at the ECS public IP (ports 80 + 443 open).
+# Caddy fetches and renews the Let's Encrypt certificate itself; Lark and Zoho need a real certificate.
+alert-ir.example.com {
+    reverse_proxy bot:8080
+}

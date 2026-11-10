@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+requests
+python-dotenv
+pyyaml
+anthropic
+cryptography   # only needed if LARK_ENCRYPT_KEY is set

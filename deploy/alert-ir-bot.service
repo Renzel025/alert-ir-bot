@@ -1,0 +1,19 @@
+# Alternative to Docker: run directly with systemd (same pattern as lark-ops-ai).
+#   sudo cp deploy/alert-ir-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now alert-ir-bot
+#   journalctl -u alert-ir-bot -f
+[Unit]
+Description=alert-ir-bot (MonitorFlow -> AI triage -> Lark / PagerDuty)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/alert-ir-bot
+EnvironmentFile=/home/ubuntu/alert-ir-bot/.env
+ExecStart=/home/ubuntu/alert-ir-bot/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
