@@ -16,5 +16,8 @@ alert-ir.example.com:8443 {
             client_ip {env.NAMECHEAP_CLIENT_IP}
         }
     }
+    # access log: one JSON line per request, "remote_ip" = who really called (Lark / Zoho source IPs).
+    # The bot itself only ever sees Caddy's Docker address, so this is the place to check the access list.
+    log
     reverse_proxy bot:8080
 }
