@@ -13,8 +13,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"          # only Caddy talks to it; not exposed to the internet directly
 
-  # HTTPS for Lark's event callback + Zoho's webhook. Caddy gets the Let's Encrypt certificate itself
-  # over 443 (TLS-ALPN challenge), so 443 is the only inbound port and it must be open to 0.0.0.0/0.
+  # HTTPS for Lark's event callback + Zoho's webhook. 443 is access-listed to Lark + Zoho source IPs,
+  # so the Let's Encrypt certificate is obtained by hand (deploy/certs/README.md) and mounted read-only.
   caddy:
     image: caddy:2
     container_name: alert-ir-caddy
@@ -23,6 +23,7 @@ services:
       - "443:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/certs:/certs:ro         # certbot output (live/<host>/fullchain.pem + privkey.pem)
       - caddy_data:/data
       - caddy_config:/config
 

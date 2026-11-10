@@ -7,3 +7,5 @@ __pycache__/
 data/
 *.lock
 .DS_Store
+deploy/certs/*
+!deploy/certs/README.md

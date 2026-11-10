@@ -1,10 +1,10 @@
-# Replace with the DNS name whose A record points at the ECS public IP.
-# Inbound 443 must be open to 0.0.0.0/0: Lark and Zoho call it, and Let's Encrypt (no fixed IPs)
-# connects to it once to verify the domain before issuing the certificate (TLS-ALPN challenge,
-# so port 80 is not required). Caddy fetches and renews the certificate itself.
+# Replace alert-ir.example.com (3 places) with the DNS name whose A record points at the ECS public IP.
+# Inbound 443 is access-listed (Lark + Zoho IPs only), so Let's Encrypt cannot verify the domain by
+# connecting in. The certificate is obtained by hand with certbot's manual DNS challenge instead
+# (see deploy/certs/README.md) and Caddy just uses the files. Redo it before the 90-day expiry.
 alert-ir.example.com {
+    tls /certs/live/alert-ir.example.com/fullchain.pem /certs/live/alert-ir.example.com/privkey.pem
     # access log: one JSON line per request, "remote_ip" = who really called (Lark / Zoho source IPs).
-    # The bot itself only ever sees Caddy's Docker address, so this is the place to check callers.
     log
     reverse_proxy bot:8080
 }
