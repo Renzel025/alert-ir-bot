@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 # Claude Code CLI for the AI notes (app/ai_notes.py runs `claude -p` headless; there is no API key).
 # Auth comes from CLAUDE_CODE_OAUTH_TOKEN in .env (`claude setup-token` on a logged-in machine).
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates tzdata \
     && curl -fsSL https://claude.ai/install.sh | bash \
     && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 ENV CLAUDE_BIN=/root/.local/bin/claude

@@ -8,6 +8,7 @@ services:
     environment:
       DATABASE_PATH: /data/alert_ir.sqlite3
       POLICY_PATH: /data/policy.yaml
+      TZ: ${TZ:-Asia/Manila}            # card history times ("Triggered 17:23"); containers default to UTC
     volumes:
       - ./data:/data                   # sqlite + policy.yaml survive rebuilds; edit data/policy.yaml live
     ports:
