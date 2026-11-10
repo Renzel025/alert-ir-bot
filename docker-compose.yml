@@ -13,9 +13,12 @@ services:
     ports:
       - "127.0.0.1:8080:8080"          # only Caddy talks to it; not exposed to the internet directly
 
-  # HTTPS for Lark's event callback + Zoho's webhook. 443 is access-listed to Lark + Zoho source IPs,
-  # so the Let's Encrypt certificate is obtained by hand (deploy/certs/README.md) and mounted read-only.
+  # HTTPS for Lark's event callback + Zoho's webhook. On the ECS server the host's existing nginx owns
+  # 443 and proxies alert-bot.<domain> to 127.0.0.1:8080 (see deploy/nginx-alert-bot.conf), so Caddy is
+  # OFF by default. Only on a server with no web server on 443: `docker compose --profile caddy up -d`.
+  # Certificate: Let's Encrypt via manual DNS challenge, deploy/certs/README.md.
   caddy:
+    profiles: ["caddy"]
     image: caddy:2
     container_name: alert-ir-caddy
     restart: unless-stopped
