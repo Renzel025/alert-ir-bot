@@ -236,6 +236,12 @@ def resolve_normal(incident_id: int, actor: str, text: str) -> None:
     db.update_incident(incident_id, status="resolved", wait_deadline=None, resolved_at=time.time())
     db.log_outcome(incident_id, "human_normal", actor=actor, detail=text[:500])
     _reply(incident_id, "🟢 Check person says normal. Resolving. If it fires again, a new incident opens.")
+    # the thread is folded away for everyone else: say it in the group too, so nobody keeps looking
+    inc = db.get_incident(incident_id) or {}
+    pol = json.loads(inc.get("policy_json") or "{}")
+    who = lark_client.mention(actor, pol.get("check_person_name") or "") if actor else "the check person"
+    _reply(incident_id, f"🟢 {inc.get('rule_name') or 'Alert'}: {who} checked and says it is normal (\"{text[:80]}\"). "
+                        f"Incident #{incident_id} resolved, no page.", in_thread=False)
 
 
 def sweep_timeouts() -> int:
@@ -664,14 +670,15 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
 
 # --- helpers ----------------------------------------------------------------------------
 
-def _reply(incident_id: int, text: str) -> None:
-    """Reply in the incident thread. A Lark failure must never stop the pipeline."""
+def _reply(incident_id: int, text: str, in_thread: bool = True) -> None:
+    """Reply under the incident's root message: inside its thread (default), or as a quoted reply
+    visible in the group itself (in_thread=False). A Lark failure must never stop the pipeline."""
     inc = db.get_incident(incident_id)
     root = (inc or {}).get("thread_root_message_id") or ""
     if not root:
         log.warning("incident %s has no thread root; wanted to say: %s", incident_id, text)
         return
     try:
-        lark_client.reply_text(root, text, in_thread=True)
+        lark_client.reply_text(root, text, in_thread=in_thread)
     except Exception as e:  # noqa: BLE001
         log.warning("Lark reply failed for incident %s: %s", incident_id, e)
