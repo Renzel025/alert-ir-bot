@@ -44,8 +44,17 @@ def fake_update_card(message_id, card):
 PD_INC = {"id": "Q1", "title": "card test", "html_url": "https://pd/Q1", "urgency": "high",
           "service": {"summary": "Bot Service"}, "assignments": [{"assignee": {"summary": "Renzel Hernandez"}}]}
 
+MEETING_CALLS: List[Dict[str, Any]] = []
+
+
+def fake_create_meeting(topic, owner_open_id, hours=24):
+    MEETING_CALLS.append({"topic": topic, "owner": owner_open_id, "hours": hours})
+    return {"url": f"https://vc.larksuite.com/j/{len(MEETING_CALLS)}", "meeting_no": "123456789"}
+
+
 lark_client.post_card = fake_post_card
 lark_client.update_card = fake_update_card
+lark_client.create_meeting = fake_create_meeting
 pagerduty.set_status = lambda incident_id, status: dict(PD_INC, status=status)
 pagerduty.snooze = lambda incident_id, minutes: dict(PD_INC, status="acknowledged")
 pagerduty.get_incident = lambda incident_id: dict(PD_INC, id=incident_id)   # every test id "exists"
@@ -140,7 +149,7 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     card = _last("update")["card"]                     # the repaint after PagerDuty confirmed
     assert _last("update")["id"] == "om_100"
     assert card["header"]["template"] == "yellow"
-    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]
+    assert _buttons(card) == ["Resolve", "Create meeting", "Open in PagerDuty"]
     assert "Acknowledged by <at id=ou_me></at>" in _history(card)
     n = len(LARK_CALLS)
     zoho("acknowledged")                      # PagerDuty echoes the click a second later
@@ -148,12 +157,42 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     assert _history(LARK_CALLS[-1]["card"]).count("Acknowledged") == 1   # no second line
 
 
+def test_meeting_failure_adds_warning_and_keeps_button():
+    def down(topic, owner_open_id, hours=24):
+        raise lark_client.LarkError("create_meeting: code=99991663 msg=no permission vc:reserve")
+    lark_client.create_meeting = down
+    resp = click("meeting")
+    assert resp == {"toast": {"type": "info", "content": "Creating the incident meeting…"}}
+    card = _last("update")["card"]
+    assert card["header"]["template"] == "yellow"                       # state untouched
+    assert "⚠️ Meeting by <at id=ou_me></at> failed: create_meeting: code=99991663" in _history(card)
+    assert _buttons(card) == ["Resolve", "Create meeting", "Open in PagerDuty"]   # can retry
+    assert db.get_pd_card("Q1")["meeting_url"] is None
+    lark_client.create_meeting = fake_create_meeting
+
+
+def test_meeting_click_creates_one_meeting_and_shows_the_link():
+    click("meeting")
+    assert MEETING_CALLS == [{"topic": "card test", "owner": "ou_me", "hours": config.MEETING_HOURS}]
+    card = _last("update")["card"]
+    facts = card["elements"][0]["text"]["content"]
+    assert "📞 **Meeting:** [Join the incident call](https://vc.larksuite.com/j/1)" in facts
+    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]           # button gone once a link exists
+    assert "📞 Meeting created by <at id=ou_me></at>" in _history(card)
+    assert db.get_pd_card("Q1")["meeting_url"] == "https://vc.larksuite.com/j/1"
+    assert AI_CALLS[-1] == "acknowledged"                               # a meeting is not a state: no AI note
+    click("meeting", who="ou_other")                                    # second click, other person
+    assert len(MEETING_CALLS) == 1                                      # same meeting, no new reservation
+    assert "https://vc.larksuite.com/j/1" in _last("update")["card"]["elements"][0]["text"]["content"]
+
+
 def test_snooze_click_then_ack_event_is_noise():
     resp = click("snooze", option="30")
     assert resp["toast"]["content"] == "Ignoring for 30 min in PagerDuty…"
     card = _last("update")["card"]
     assert card["header"]["template"] == "yellow"
-    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]
+    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]           # meeting link already on the card
+    assert "Join the incident call" in card["elements"][0]["text"]["content"]
     assert "Ignored for 30 min by <at id=ou_me></at>" in _history(card)
     zoho("acknowledged")
     assert _history(LARK_CALLS[-1]["card"]).count("Acknowledged") == 1

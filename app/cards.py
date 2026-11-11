@@ -3,13 +3,15 @@
     state          header   buttons
     triggered      red      Acknowledge · Resolve · Ignore for… · Open in PagerDuty
     escalated      orange   Acknowledge · Resolve · Ignore for… · Open in PagerDuty
-    acknowledged   yellow   Resolve · Open in PagerDuty
-    snoozed        yellow   Resolve · Open in PagerDuty
+    acknowledged   yellow   Resolve · Create meeting · Open in PagerDuty
+    snoozed        yellow   Resolve · Create meeting · Open in PagerDuty
     resolved       green    Open in PagerDuty
 
-Button values round-trip through Lark's card.action.trigger callback to pipeline.handle_card_action:
-{"action": "acknowledged" | "resolved" | "snooze", "incident_id": "Q..."}; the Ignore dropdown adds
-`option` = minutes. Keep this the only place that knows what the card looks like.
+"Create meeting" shows only while no meeting exists; once one does, the card shows its join link
+instead (in every later state, including resolved). Button values round-trip through Lark's
+card.action.trigger callback to pipeline.handle_card_action:
+{"action": "acknowledged" | "resolved" | "snooze" | "meeting", "incident_id": "Q..."}; the Ignore
+dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
 """
 from __future__ import annotations
 
@@ -18,8 +20,8 @@ from typing import Any, Dict, List
 STYLE: Dict[str, Dict[str, Any]] = {
     "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "ignore"]},
     "escalated":    {"color": "orange", "buttons": ["ack", "resolve", "ignore"]},
-    "acknowledged": {"color": "yellow", "buttons": ["resolve"]},
-    "snoozed":      {"color": "yellow", "buttons": ["resolve"]},
+    "acknowledged": {"color": "yellow", "buttons": ["resolve", "meeting"]},
+    "snoozed":      {"color": "yellow", "buttons": ["resolve", "meeting"]},
     "resolved":     {"color": "green",  "buttons": []},
 }
 
@@ -46,11 +48,14 @@ def _ignore_select(incident_id: str) -> Dict[str, Any]:
 
 def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
                      urgency: str = "", service: str = "", assignees: str = "",
-                     history: List[str] | None = None, ai_note: str = "", ai_note_stage: str = "") -> Dict[str, Any]:
+                     history: List[str] | None = None, ai_note: str = "", ai_note_stage: str = "",
+                     meeting_url: str = "") -> Dict[str, Any]:
     style = STYLE.get(state) or STYLE["triggered"]
     facts = [f"**Urgency:** {urgency or '?'} · **Service:** {service or '?'}"]
     if assignees:
         facts.append(f"**Assigned:** {assignees}")
+    if meeting_url:
+        facts.append(f"📞 **Meeting:** [Join the incident call]({meeting_url})")
     actions: List[Dict[str, Any]] = []
     for b in style["buttons"]:
         if b == "ack":
@@ -59,6 +64,8 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
             actions.append(_button("Resolve", "resolved", incident_id, "default"))
         elif b == "ignore":
             actions.append(_ignore_select(incident_id))
+        elif b == "meeting" and not meeting_url:
+            actions.append(_button("Create meeting", "meeting", incident_id, "default"))
     actions.append({"tag": "button", "text": _plain("Open in PagerDuty"), "type": "default", "url": html_url or "https://app.pagerduty.com"})
 
     elements: List[Dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(facts)}}]

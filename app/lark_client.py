@@ -122,6 +122,28 @@ def reply_text(message_id: str, text: str, in_thread: bool = True) -> Dict[str, 
     return _check(r, "reply_text")
 
 
+def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str, Any]:
+    """Reserve a Lark video meeting and return its join link ({"url", "meeting_no", "id", ...}).
+    POST /vc/v1/reserves/apply, scope `vc:reserve`. With a tenant token Lark requires an owner_id,
+    so the person who clicked "Create meeting" owns it. The reservation expires after `hours`."""
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] create_meeting topic=%r owner=%s", topic, owner_open_id)
+        return {"url": "https://vc.larksuite.com/j/000000000", "meeting_no": "000000000"}
+    payload = {
+        "end_time": str(int(time.time()) + hours * 3600),
+        "owner_id": owner_open_id,
+        "meeting_settings": {"topic": topic[:100]},
+    }
+    r = requests.post(
+        f"{config.LARK_BASE}/vc/v1/reserves/apply?user_id_type=open_id",
+        headers=_headers(), json=payload, timeout=config.HTTP_TIMEOUT,
+    )
+    reserve = _check(r, "create_meeting").get("reserve") or {}
+    if not reserve.get("url"):
+        raise LarkError("create_meeting: Lark returned no meeting url")
+    return reserve
+
+
 def list_messages(chat_id: str, page_size: int = 20) -> List[Dict[str, Any]]:
     """Newest messages in a chat (polling mode). Items use msg_type / body.content / sender.id."""
     params = {

@@ -376,6 +376,7 @@ def _render_card(row: Dict[str, Any]) -> Dict[str, Any]:
         state, row["pd_incident_id"], row.get("title") or row["pd_incident_id"], row.get("html_url") or "",
         urgency=row.get("urgency") or "", service=row.get("service") or "", assignees=row.get("assignees") or "",
         history=[h["line"] for h in history], ai_note=notes.get(note_stage, ""), ai_note_stage=note_stage,
+        meeting_url=row.get("meeting_url") or "",
     )
 
 
@@ -555,14 +556,51 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     incident_id = str(value.get("incident_id") or "")
     who = str((event.get("operator") or {}).get("open_id") or "")
     clicked_message_id = str((event.get("context") or {}).get("open_message_id") or "")
-    if not incident_id or action not in ("acknowledged", "resolved", "snooze"):
+    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting"):
         log.warning("card click ignored: value=%s", value)
         return {"toast": {"type": "error", "content": "Unknown button"}}
     minutes = int(act.get("option") or 0) if action == "snooze" else 0   # the dropdown choice, in minutes
+    if action == "meeting":
+        threading.Thread(target=_do_meeting, args=(incident_id, who, clicked_message_id),
+                         daemon=True, name=f"act-{incident_id}").start()
+        return {"toast": {"type": "info", "content": "Creating the incident meeting…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min"}[action]
     return {"toast": {"type": "info", "content": f"{label} in PagerDuty…"}}
+
+
+def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
+    """Background half of "Create meeting": one Lark video meeting per PagerDuty incident, owned by the
+    person who clicked. Not a paging decision, so PagerDuty is not involved. A second click (or a race
+    between two clickers) reuses the first link. Failure → a warning line on the card, state unchanged."""
+    by = f"<at id={who}></at>" if who else "someone"
+    row = db.get_pd_card(incident_id)
+    if not row:
+        log.warning("meeting: no card for %s, ignored", incident_id)
+        return
+    state = row.get("state") or "triggered"
+    if row.get("meeting_url"):
+        log.info("meeting for %s already exists; repainting", incident_id)
+        _paint_pd_card(incident_id, state, message_id=clicked_message_id)
+        return
+    try:
+        reserve = lark_client.create_meeting(row.get("title") or incident_id, who, config.MEETING_HOURS)
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting for %s by %s failed: %s", incident_id, who, e)
+        _paint_pd_card(incident_id, state, message_id=clicked_message_id,
+                       extra_line=f"⚠️ Meeting by {by} failed: {str(e)[:100]}")
+        return
+    row = db.get_pd_card(incident_id) or row
+    if row.get("meeting_url"):                                  # someone else won the race
+        _paint_pd_card(incident_id, state, message_id=clicked_message_id)
+        return
+    db.upsert_pd_card(incident_id, meeting_url=reserve["url"])
+    log.info("meeting for %s created by %s: %s", incident_id, who, reserve["url"])
+    _paint_pd_card(incident_id, state, message_id=clicked_message_id, extra_line=f"📞 Meeting created by {by}")
+    if row.get("incident_id"):
+        _reply(int(row["incident_id"]), f"Incident call: {reserve['url']}")
+        db.log_decision(int(row["incident_id"]), "reply", "meeting", f"{who} {reserve['url']}")
 
 
 def _do_card_action(action: str, incident_id: str, who: str, minutes: int, clicked_message_id: str) -> None:

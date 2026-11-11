@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS pd_cards (
 _MIGRATIONS = [
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
+    ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
 ]
 
 
