@@ -116,15 +116,27 @@ def _facts(card):
     return card["elements"][0]["text"]["content"]
 
 
+_prompt_text = _facts            # the decision card's one text block
+
+RUNG: List[Dict[str, Any]] = []
+ACTIVE = {"meeting_id": "m_live"}
+lark_client.get_active_meeting_id = lambda reserve_id: ACTIVE["meeting_id"]
+lark_client.invite_to_meeting = lambda meeting_id, open_ids: RUNG.append({"meeting": meeting_id, "who": list(open_ids)})
+config.CALL_RING_POLL_SEC = 0
+config.CALL_RING_WAIT_SEC = 1
+
+
 # --- scenario A: normal threshold, acknowledged while PagerDuty is DOWN (bot card fallback), resolved as normal
 
 def test_prompt_goes_to_the_group_with_the_firing_clock():
     PD_DOWN["on"] = True
     iid = alert("Bot-test")
     inc = db.get_incident(iid)
-    msg = _last("post_text")
-    assert msg["chat"] == "oc_test" and "🟡 Bot-test (WARNING)" in msg["text"] and "'acknowledge'" in msg["text"]
-    assert "still firing 20 min after it started" in msg["text"]
+    msg = _last("post_card")
+    text = _prompt_text(msg["card"])
+    assert msg["chat"] == "oc_test" and "🟡 **Bot-test** (WARNING)" in text and "'acknowledge'" in text
+    assert "still firing 20 min after it started" in text
+    assert _buttons(msg["card"]) == ["📞 Call check person"]
     assert inc["prompt_message_id"].startswith("om_")
     assert abs(inc["wait_deadline"] - (inc["created_at"] + 20 * 60)) < 1      # firing clock, no ack deadline
 
@@ -223,7 +235,7 @@ def test_high_threshold_has_the_5_min_ack_clock():
     iid = alert("Login-latency", "P1")
     inc = db.get_incident(iid)
     assert abs(inc["wait_deadline"] - (inc["created_at"] + 5 * 60)) < 1
-    assert "No acknowledgement within 5 min" in _last("post_text")["text"]
+    assert "No acknowledgement within 5 min" in _prompt_text(_last("post_card")["card"])
 
 
 def test_no_ack_in_time_pages():
@@ -392,6 +404,48 @@ def test_ai_timeline_has_names_not_ids_and_no_internal_errors():
     assert "ou_" not in format_context(CTX[-1]) and "<at" not in format_context({"timeline": ["🟡 Acknowledged by <at id=ou_abc></at> 10:00"]})
     config.AI_NOTES = False
     config.PD_ON_ACKNOWLEDGE = True
+
+
+def test_failed_test_run_pages_at_once_with_the_decision_card_and_call_button():
+    """policy rule ^test-automation: always_page → no 🟡 wait: PagerDuty trigger + the 🔴 decision card."""
+    PD.clear()
+    POLICY.always_page = True
+    body = {"source": "test-automation", "provider": "JILI 3085", "game": "Super Ace", "duration": "9s",
+            "steps": [{"step": "Enter Casino Plus", "ok": False, "note": "login failed"}], "lark_message_id": "om_run_card_9"}
+    out = pipeline.handle_alert_push(body)
+    assert out["result"] == "paged_policy" and [p["op"] for p in PD] == ["trigger"]
+    inc = db.find_open_incident("test-automation:_jili_3085")
+    assert inc["status"] == "paged" and inc["prompt_message_id"].startswith("om_")
+    card = _last("post_card")["card"]
+    text = _prompt_text(card)
+    assert text.startswith("🔴 **test-automation: JILI 3085** (HIGH): Enter Casino Plus ❌ login failed")
+    assert "on-call is being paged" in text and "'acknowledge'" not in text and "page on-call at" not in text
+    assert _buttons(card) == ["📞 Call check person"]
+    POLICY.always_page = False
+
+
+def test_call_check_person_opens_the_meeting_and_rings_them():
+    inc = db.find_open_incident("test-automation:_jili_3085")
+    iid = int(inc["id"])
+    MEETINGS.clear(); RUNG.clear()
+    resp = click(iid, "call_cp", MATE)                          # anyone may press it, also after the page
+    assert resp["toast"]["type"] == "info" and "join it" in resp["toast"]["content"]
+    assert MEETINGS == [MATE]                                   # meeting owned by the clicker
+    assert RUNG == [{"meeting": "m_live", "who": [CP]}]         # the check person is rung into it
+    assert "📞 Ringing" in _last("post_text")["text"] and f'<at user_id="{CP}">' in _last("post_text")["text"]
+    assert [d["decision"] for d in db.decisions(iid) if d["decision"] in ("call_cp", "rang_cp")] == ["call_cp", "rang_cp"]
+    click(iid, "call_cp", MATE)                                 # second press: same meeting, rings again
+    assert MEETINGS == [MATE] and len(RUNG) == 2
+
+
+def test_call_check_person_when_nobody_joins():
+    inc = db.find_open_incident("test-automation:_jili_3085")
+    iid = int(inc["id"])
+    ACTIVE["meeting_id"] = ""
+    n = len(RUNG)
+    click(iid, "call_cp", MATE)
+    assert len(RUNG) == n and "Nobody joined the incident call" in _last("post_text")["text"]
+    ACTIVE["meeting_id"] = "m_live"
 
 
 def test_reply_words():

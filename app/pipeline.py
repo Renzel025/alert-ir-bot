@@ -181,6 +181,7 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
         chat_id=config.FIXED_GROUP_CHAT_ID,
         alert_message_id=msg["message_id"],
         pd_dedup_key=f"{alert.fingerprint}-{int(time.time())}",
+        check_person_open_id=pol.check_person or None,     # known from the start: "Call check person" works on paged alerts too
         policy_json=json.dumps(pol.to_dict(), ensure_ascii=False),
         alert_json=json.dumps(alert.to_dict(), ensure_ascii=False),
     )
@@ -197,6 +198,8 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
     db.log_decision(iid, "policy", "page" if pol.always_page else "triage", f"matched={pol.matched}", pol.to_dict())
     if pol.always_page:
         page(iid, reason=f"Always-page alert class ({pol.matched}).", outcome="always_page")
+        # the decision card goes up at the same time: facts + "Call check person", no wait, no clock
+        _post_decision_card(iid, incident, alert, pol, clock="", paged=True)
         return "paged_policy"
 
     # 4) AI triage — any failure pages
@@ -226,19 +229,29 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
         clock = f"No acknowledgement within {pol.wait_minutes} min = I page on-call at {at}."
     else:
         clock = f"If this is still firing {pol.firing_minutes} min after it started, I page on-call at {at}."
-    what = _one_line(alert.alert_value) or f"{alert.firing_count} instance(s)"
-    prompt_id = _reply(
-        iid,
-        f"🟡 {alert.rule_name} ({alert.severity or '?'}): {what}\n"
-        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply to this message: "
-        f"'normal' if it is fine, or 'acknowledge' if you are looking into it. {clock}",
-        in_thread=False,     # in the group chat, where everyone sees it; the triage verdict itself is in `decisions`
-    )
-    if prompt_id:
-        db.update_incident(iid, prompt_message_id=prompt_id)   # replies to this message count as answers too
-        if not (db.get_incident(iid) or {}).get("thread_root_message_id"):
-            db.update_incident(iid, thread_root_message_id=prompt_id)   # no card to thread under: the prompt is the root
+    _post_decision_card(iid, incident, alert, pol, clock=clock, paged=False)
     return "waiting"
+
+
+def _post_decision_card(iid: int, incident: Dict[str, Any], alert: alert_parser.Alert, pol: policy_mod.Policy,
+                        clock: str, paged: bool) -> None:
+    """The decision card in the group chat (🟡 prompt, or 🔴 notice when the alert paged at once), with
+    the "Call check person" button. Its message id is remembered: replies to it count as answers, and it is
+    the thread root when there is no alert card. A Lark failure is logged; the clock / page already happened."""
+    what = _one_line(alert.alert_value) or f"{alert.firing_count} instance(s)"
+    try:
+        data = lark_client.post_card(incident.get("chat_id") or config.FIXED_GROUP_CHAT_ID,
+                                     cards.prompt_card(iid, alert.rule_name, alert.severity or "", what, pol.check_person,
+                                                       clock, paged=paged))
+        prompt_id = str(data.get("message_id") or "")
+    except Exception as e:  # noqa: BLE001
+        log.warning("decision card for incident %s failed: %s", iid, e)
+        db.log_decision(iid, "lark", "error", f"{type(e).__name__}: {e}"[:500])
+        return
+    if prompt_id:
+        db.update_incident(iid, prompt_message_id=prompt_id)
+        if not (db.get_incident(iid) or {}).get("thread_root_message_id"):
+            db.update_incident(iid, thread_root_message_id=prompt_id)
 
 
 def _open_thread(incident_id: int, alert_message_id: str, alert: alert_parser.Alert) -> None:
@@ -468,9 +481,10 @@ def _post_meeting_message(chat_id: str, title: str, url: str) -> None:
 
 
 def _do_incident_meeting(incident_id: int, who: str) -> None:
-    """"Create meeting" on the bot's own incident card: one meeting per incident, owned by the clicker."""
+    """"Create meeting" on the bot's own incident card, or the first step of "Call check person":
+    one meeting per incident, owned by the clicker."""
     inc = db.get_incident(incident_id)
-    if not inc or inc.get("status") not in ("waiting", "checking"):
+    if not inc or inc.get("status") not in ("waiting", "checking", "paged"):
         return
     if inc.get("meeting_url"):
         _paint_incident_card(incident_id)
@@ -903,17 +917,21 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
 def _handle_incident_card_action(action: str, incident_id: str, who: str) -> Dict[str, Any]:
     """Buttons on the bot's own incident card: Resolve (check person only), Page on-call now (anyone),
     Create meeting. Validated here; the work runs in a thread so Lark gets its toast at once."""
-    if not incident_id.isdigit() or action not in ("bot_resolve", "bot_page", "meeting"):
+    if not incident_id.isdigit() or action not in ("bot_resolve", "bot_page", "meeting", "call_cp"):
         return {"toast": {"type": "error", "content": "Unknown button"}}
     iid = int(incident_id)
     inc = db.get_incident(iid)
-    if not inc or inc.get("status") not in ("waiting", "checking"):
+    allowed = ("waiting", "checking", "paged") if action == "call_cp" else ("waiting", "checking")   # calling is fine after a page
+    if not inc or inc.get("status") not in allowed:
         return {"toast": {"type": "info", "content": "This incident is already closed or paged."}}
     if action == "bot_resolve" and who != (inc.get("check_person_open_id") or ""):
         return {"toast": {"type": "error", "content": "Only the tagged check person can mark this normal."}}
+    if action == "call_cp" and not inc.get("check_person_open_id"):
+        return {"toast": {"type": "error", "content": "No check person is set for this alert."}}
     threading.Thread(target=_do_incident_action, args=(action, iid, who), daemon=True, name=f"act-inc-{iid}").start()
     return {"toast": {"type": "info", "content": {"bot_resolve": "Resolving as normal…", "bot_page": "Paging on-call…",
-                                                   "meeting": "Creating the incident meeting…"}[action]}}
+                                                   "meeting": "Creating the incident meeting…",
+                                                   "call_cp": "Opening the incident call… join it and the check person is rung."}[action]}}
 
 
 def _do_incident_action(action: str, incident_id: int, who: str) -> None:
@@ -923,6 +941,51 @@ def _do_incident_action(action: str, incident_id: int, who: str) -> None:
         resolve_normal(incident_id, actor=who, text="Resolve button")
     elif action == "meeting":
         _do_incident_meeting(incident_id, who)
+    elif action == "call_cp":
+        _call_check_person(incident_id, who)
+
+
+def _call_check_person(incident_id: int, who: str) -> None:
+    """"Call check person" on the 🟡 prompt: make sure the incident meeting exists (owner = the clicker),
+    then, as soon as the meeting is live (the clicker joined), ring the check person into it with the
+    Lark invite call, which rings their Lark like a phone call. Same mechanism as the P0 bot."""
+    inc = db.get_incident(incident_id) or {}
+    cp = inc.get("check_person_open_id") or ""
+    pol = json.loads(inc.get("policy_json") or "{}")
+    cp_text = lark_client.mention(cp, pol.get("check_person_name") or "")
+    if not inc.get("meeting_url"):
+        _do_incident_meeting(incident_id, who)                  # posts the join-link message too
+        inc = db.get_incident(incident_id) or inc
+    if not inc.get("meeting_reserve_id"):
+        _reply(incident_id, f"📞 Could not open the incident call, so {cp_text} was not rung. Please call them directly.",
+               in_thread=False)
+        return
+    db.log_decision(incident_id, "reply", "call_cp", f"{who} pressed Call check person")
+    deadline = time.time() + config.CALL_RING_WAIT_SEC
+    meeting_id = ""
+    while time.time() < deadline:
+        try:
+            meeting_id = lark_client.get_active_meeting_id(inc["meeting_reserve_id"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("get_active_meeting for incident %s: %s", incident_id, e)
+        if meeting_id:
+            break
+        time.sleep(config.CALL_RING_POLL_SEC)
+    if not meeting_id:
+        _reply(incident_id, f"📞 Nobody joined the incident call within {config.CALL_RING_WAIT_SEC // 60} min, so "
+                            f"{cp_text} was not rung. Join it and press the button again.", in_thread=False)
+        return
+    try:
+        lark_client.invite_to_meeting(meeting_id, [cp])
+        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} via meeting {meeting_id}")
+        _reply(incident_id, f"📞 Ringing {cp_text} into the incident call now (started by {_mention_text(who)}).", in_thread=False)
+    except Exception as e:  # noqa: BLE001
+        log.warning("invite check person for incident %s failed: %s", incident_id, e)
+        _reply(incident_id, f"📞 Could not ring {cp_text}: {str(e)[:100]}. Please call them directly.", in_thread=False)
+
+
+def _mention_text(open_id: str) -> str:
+    return lark_client.mention(open_id, "") if open_id else "someone"
 
 
 def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:

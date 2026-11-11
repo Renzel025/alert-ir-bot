@@ -68,6 +68,8 @@ PD_ON_ACKNOWLEDGE = _env("PD_ON_ACKNOWLEDGE", "0") == "1"  # 1 = 'acknowledge' o
 DEFAULT_WAIT_MINUTES = _int("DEFAULT_WAIT_MINUTES", 0)      # must-acknowledge deadline for the check person; 0 = none
 DEFAULT_FIRING_MINUTES = _int("DEFAULT_FIRING_MINUTES", 20) # still open this long after the alert started → page
 MEETING_HOURS = _int("MEETING_HOURS", 24)                   # "Create meeting" on the card: reservation lifetime
+CALL_RING_WAIT_SEC = _int("CALL_RING_WAIT_SEC", 180)        # "Call check person": how long to wait for the clicker to join before giving up
+CALL_RING_POLL_SEC = _int("CALL_RING_POLL_SEC", 5)
 SWEEP_INTERVAL_SEC = _int("SWEEP_INTERVAL_SEC", 30)         # how often timeouts are checked
 HTTP_TIMEOUT = _int("HTTP_TIMEOUT_SEC", 10)
 DATABASE_PATH = _env("DATABASE_PATH", "alert_ir.sqlite3")

@@ -38,6 +38,33 @@ def _button(label: str, action: str, incident_id: str, btype: str, **extra: str)
             "value": {"action": action, "incident_id": incident_id, **extra}}
 
 
+# --- the 🟡 prompt card (the "trigger decision": check person tagged, clock running) -------------
+
+def prompt_card(incident_id: int, rule_name: str, severity: str, what: str, check_person_open_id: str,
+                clock_text: str = "", paged: bool = False) -> Dict[str, Any]:
+    """The decision message as a card so it can carry "Call check person".
+    paged=False: the 🟡 prompt (check person tagged, clock running; replies to it count as answers).
+    paged=True: the 🔴 notice for an alert that pages at once (Renzel 2026-11-11: a failed test run
+    does not wait for anyone), facts + the button only."""
+    iid = str(incident_id)
+    mention = f"<at id={check_person_open_id}></at>" if check_person_open_id else "check person"
+    if paged:
+        body = f"🔴 **{rule_name}** ({severity or '?'}): {what}\n{mention} on-call is being paged via PagerDuty."
+    else:
+        body = (f"🟡 **{rule_name}** ({severity or '?'}): {what}\n"
+                f"{mention} please check and reply to this message: 'normal' if it is fine, or 'acknowledge' "
+                f"if you are looking into it. {clock_text}")
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+            {"tag": "action", "actions": [
+                _button("📞 Call check person", "call_cp", iid, "primary", kind="incident"),
+            ]},
+        ],
+    }
+
+
 # --- the bot's own incident card (before PagerDuty is involved) ---------------------------
 #
 #   state      header   buttons
