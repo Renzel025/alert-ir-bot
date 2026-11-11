@@ -54,7 +54,8 @@ INCIDENT_STYLE: Dict[str, Dict[str, Any]] = {
 
 
 def incident_card(incident_id: int, state: str, rule_name: str, severity: str = "", firing_count: int = 1,
-                  deadline_text: str = "", history: List[str] | None = None, meeting_url: str = "") -> Dict[str, Any]:
+                  deadline_text: str = "", history: List[str] | None = None, meeting_url: str = "",
+                  ai_note: str = "", ai_note_stage: str = "") -> Dict[str, Any]:
     style = INCIDENT_STYLE.get(state) or INCIDENT_STYLE["checking"]
     iid = str(incident_id)
     facts = [f"**Severity:** {severity or '?'} · **Instances:** {firing_count} · **Incident:** #{iid}"]
@@ -74,6 +75,9 @@ def incident_card(incident_id: int, state: str, rule_name: str, severity: str = 
     if history:
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(history)}})
+    if ai_note:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"🤖 **AI note ({ai_note_stage or state})**\n{ai_note}"}})
     if actions:
         elements.append({"tag": "action", "actions": actions})
     return {

@@ -281,6 +281,15 @@ def acknowledge_incident(incident_id: int, actor: str, text: str = "") -> None:
                             f"right now, so here is the incident card instead. Still open at {at} = I page on-call.",
                in_thread=False)
         _paint_incident_card(incident_id, line=f"🔎 Acknowledged by {_mention_card(actor)} {time.strftime('%H:%M')}")
+        _start_incident_ai_note(incident_id, "acknowledged", f"acknowledged by {actor}")
+
+
+def _start_incident_ai_note(incident_id: int, stage: str, how: str) -> None:
+    """AI note for an incident that has no PagerDuty card (fallback card or resolved before any
+    acknowledge). Background thread; painted onto the bot's card when it exists, else posted."""
+    if config.AI_NOTES and config.AI_BACKEND != "off":
+        threading.Thread(target=_ai_note_for_incident, args=(incident_id, stage, how), daemon=True,
+                         name=f"ai-inc-{incident_id}-{stage}").start()
 
 
 def _open_in_pagerduty(incident_id: int, acknowledged: bool, reason: str) -> bool:
@@ -320,6 +329,42 @@ def resolve_normal(incident_id: int, actor: str, text: str) -> None:
     if inc.get("card_message_id"):
         _paint_incident_card(incident_id, line=f"🟢 Normal, resolved by {_mention_card(actor)} {time.strftime('%H:%M')}")
     _end_incident_meeting(incident_id)
+    if not inc.get("pd_opened_at"):
+        # no PagerDuty card for this one: the resolved note (the incident summary later notes and
+        # triage learn from) goes onto the bot's card, or to the group when there is no card
+        _start_incident_ai_note(incident_id, "resolved", f"normal, said by {actor}: {text[:80]}")
+
+
+def _ai_note_for_incident(incident_id: int, stage: str, how: str) -> None:
+    """Write one AI note for an incident without a PagerDuty card, from the incident's own facts and
+    audit trail. Stored in incidents.ai_notes_json; 'resolved' is also outcome ai_summary. Painted
+    onto the bot's card when it exists, otherwise posted in the group. Any failure is only logged."""
+    try:
+        inc = db.get_incident(incident_id) or {}
+        alert = json.loads(inc.get("alert_json") or "{}")
+        started = float(inc.get("created_at") or time.time())
+        timeline = [f"🟡 Triggered {time.strftime('%H:%M', time.localtime(started))}, check person tagged"]
+        for d in db.decisions(incident_id):
+            if d.get("stage") != "ai_note":
+                timeline.append(f"{d.get('stage')}: {d.get('decision')} {(d.get('reasoning') or '')[:80]}")
+        timeline.append(f"{stage} {time.strftime('%H:%M')}: {how}")
+        ctx = {"title": f"[{inc.get('severity') or '?'}] {inc.get('rule_name')}", "service": "(not in PagerDuty)",
+               "urgency": inc.get("severity"), "assignees": inc.get("acked_by") or "",
+               "timeline": timeline, "alert": alert, "past_cases": db.past_cases(inc.get("rule_name") or "")}
+        text = ai_notes.note(stage, ctx)
+        inc = db.get_incident(incident_id) or inc
+        notes = json.loads(inc.get("ai_notes_json") or "{}")
+        notes[stage] = text
+        db.update_incident(incident_id, ai_notes_json=json.dumps(notes, ensure_ascii=False))
+        db.log_decision(incident_id, "ai_note", stage, text[:500])
+        if stage == "resolved":
+            db.log_outcome(incident_id, "ai_summary", actor="ai", detail=text[:1000])
+        if inc.get("card_message_id"):
+            _paint_incident_card(incident_id)
+        else:
+            _reply(incident_id, f"🤖 AI note ({stage}) for {inc.get('rule_name')}, incident #{incident_id}:\n{text}", in_thread=False)
+    except Exception as e:  # noqa: BLE001
+        log.warning("ai note (%s) for incident %s skipped: %s", stage, incident_id, e)
 
 
 def _paint_incident_card(incident_id: int, line: str = "") -> None:
@@ -335,8 +380,11 @@ def _paint_incident_card(incident_id: int, line: str = "") -> None:
     deadline_text = ""
     if state == "checking" and inc.get("wait_deadline"):
         deadline_text = f"I page on-call at {time.strftime('%H:%M', time.localtime(float(inc['wait_deadline'])))} unless resolved."
+    notes = json.loads(inc.get("ai_notes_json") or "{}")
+    note_stage = next((s for s in ("resolved", "acknowledged") if notes.get(s)), "")   # newest stage that has a note
     card = cards.incident_card(incident_id, state, inc.get("rule_name") or "", inc.get("severity") or "",
-                               int(alert.get("firing_count") or 1), deadline_text, history, inc.get("meeting_url") or "")
+                               int(alert.get("firing_count") or 1), deadline_text, history, inc.get("meeting_url") or "",
+                               ai_note=notes.get(note_stage, ""), ai_note_stage=note_stage)
     try:
         if inc.get("card_message_id"):
             lark_client.update_card(inc["card_message_id"], card)

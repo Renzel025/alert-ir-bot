@@ -64,8 +64,20 @@ policy_mod.lookup = lambda rule, sev: policy_mod.Policy(**{**POLICY.to_dict()})
 def _wait():
     for _ in range(2):
         for t in threading.enumerate():
-            if t.name.startswith(("act-", "paint-")):
+            if t.name.startswith(("act-", "paint-", "ai-")):
                 t.join(2)
+
+
+AI_NOTES_MADE: List[str] = []
+
+
+def fake_note(stage, ctx):
+    AI_NOTES_MADE.append(stage)
+    return f"summary: {ctx['title']} lasted a few minutes; {ctx['timeline'][-1]}"
+
+
+from app import ai_notes  # noqa: E402
+ai_notes.note = fake_note
 
 
 def alert(rule: str, severity: str = "WARNING") -> int:
@@ -124,8 +136,10 @@ def test_not_normal_is_unclear_not_escalate():
 
 
 def test_acknowledge_with_pagerduty_down_posts_the_bot_card():
+    config.AI_NOTES = True
     iid = db.find_open_incident("bot-test")["id"]
     assert reply(iid, MATE, "ack, checking now") == "acknowledged"
+    _wait()
     inc = db.get_incident(iid)
     assert inc["status"] == "checking" and inc["acked_by"] == MATE and not inc["pd_opened_at"]
     assert abs(inc["wait_deadline"] - (inc["created_at"] + 20 * 60)) < 1      # firing clock unchanged
@@ -136,6 +150,11 @@ def test_acknowledge_with_pagerduty_down_posts_the_bot_card():
     assert "I page on-call at" in _facts(card)
     assert f"🔎 Acknowledged by <at id={MATE}></at>" in card["elements"][2]["text"]["content"]
     assert inc["card_message_id"].startswith("om_")
+    # the AI note for the acknowledged stage is painted onto the same card a moment later
+    assert AI_NOTES_MADE == ["acknowledged"]
+    painted = _last("update_card")["card"]
+    assert "🤖 **AI note (acknowledged)**\nsummary: [WARNING] Bot-test" in painted["elements"][4]["text"]["content"]
+    assert _buttons(painted) == ["Resolve", "Create meeting", "Page on-call now"]
 
 
 def test_second_ack_changes_nothing():
@@ -168,13 +187,32 @@ def test_resolve_button_is_check_person_only():
 def test_normal_from_check_person_resolves_and_cancels_the_meeting():
     iid = db.find_open_incident("bot-test")["id"]
     assert reply(iid, CP, "normal") == "resolved_normal"
+    _wait()
     inc = db.get_incident(iid)
     assert inc["status"] == "resolved" and PD == []                            # never reached PagerDuty
-    PD_DOWN["on"] = False
-    assert "🟢 Bot-test:" in _last("post_text")["text"] and "no page" in _last("post_text")["text"]
-    card = _last("update_card")["card"]
-    assert card["header"]["template"] == "green" and _buttons(card) == [] and "Join the incident call" not in _facts(card)
+    assert any("🟢 Bot-test:" in c["text"] and "no page" in c["text"] for c in LARK if c["op"] == "post_text")
+    # no PagerDuty card → the resolved AI note lands on the bot's card and is stored as the ai_summary outcome
+    assert AI_NOTES_MADE == ["acknowledged", "resolved"]
+    painted = _last("update_card")["card"]
+    assert painted["header"]["template"] == "green"
+    assert "🤖 **AI note (resolved)**" in painted["elements"][4]["text"]["content"]
+    assert [d["decision"] for d in db.decisions(iid) if d["stage"] == "ai_note"] == ["acknowledged", "resolved"]
+    assert _buttons(painted) == [] and "Join the incident call" not in _facts(painted)
     assert DELETED == ["rsv1"]
+    config.AI_NOTES = False
+    PD_DOWN["on"] = False
+
+
+def test_normal_before_any_ack_posts_the_ai_summary_in_the_group():
+    config.AI_NOTES = True
+    AI_NOTES_MADE.clear()
+    iid = alert("Quick-false-alarm")
+    assert reply(iid, CP, "false alarm, all good") == "resolved_normal"
+    _wait()
+    assert AI_NOTES_MADE == ["resolved"]
+    msg = _last("post_text")["text"]
+    assert msg.startswith("🤖 AI note (resolved) for Quick-false-alarm")
+    config.AI_NOTES = False
 
 
 # --- scenario B: high threshold, nobody acknowledges within 5 min ------------------------

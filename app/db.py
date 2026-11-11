@@ -90,6 +90,7 @@ _MIGRATIONS = [
     ("incidents", "meeting_reserve_id", "TEXT"),
     ("incidents", "muted_until", "REAL"),         # "Ignore for N min" on the PagerDuty card: repeats stay silent until then
     ("incidents", "pd_opened_at", "REAL"),        # the PagerDuty incident exists (opened on 'acknowledge' or by page())
+    ("incidents", "ai_notes_json", "TEXT"),       # AI notes per stage for incidents that never got a PagerDuty card
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
@@ -265,6 +266,12 @@ def log_decision(incident_id: int, stage: str, decision: str, reasoning: str = "
             (incident_id, stage, decision, reasoning, json.dumps(inputs or {}, ensure_ascii=False), time.time()),
         )
         _conn().commit()
+
+
+def decisions(incident_id: int) -> List[Dict[str, Any]]:
+    """The audit trail of one incident, oldest first."""
+    with _LOCK:
+        return _all(_conn().execute("SELECT * FROM decisions WHERE incident_id = ? ORDER BY id", (incident_id,)))
 
 
 def log_outcome(incident_id: int, result: str, actor: str = "", detail: str = "") -> None:
