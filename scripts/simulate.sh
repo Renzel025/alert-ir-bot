@@ -34,5 +34,5 @@ case "${1:-}" in
     curl -s -X POST "$BOT/pagerduty/status" -H 'Content-Type: application/json' \
       -H "X-Status-Secret: ${PD_STATUS_SECRET:-change-me}" \
       -d "{\"dedup_key\":\"${DEDUP_KEY:-provider_drop_rate-0}\",\"status\":\"${2:-acknowledged}\",\"user\":\"jeno\",\"time\":\"$(date -u +%FT%TZ)\"}"; echo ;;
-  *) echo "usage: $0 alert | reply [normal|escalate] | pd [acknowledged|resolved]"; exit 1 ;;
+  *) echo "usage: $0 alert | reply [normal|acknowledge] | pd [acknowledged|resolved]"; exit 1 ;;
 esac
