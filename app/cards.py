@@ -33,8 +33,54 @@ def _plain(text: str) -> Dict[str, str]:
     return {"tag": "plain_text", "content": text}
 
 
-def _button(label: str, action: str, incident_id: str, kind: str) -> Dict[str, Any]:
-    return {"tag": "button", "text": _plain(label), "type": kind, "value": {"action": action, "incident_id": incident_id}}
+def _button(label: str, action: str, incident_id: str, btype: str, **extra: str) -> Dict[str, Any]:
+    return {"tag": "button", "text": _plain(label), "type": btype,
+            "value": {"action": action, "incident_id": incident_id, **extra}}
+
+
+# --- the bot's own incident card (before PagerDuty is involved) ---------------------------
+#
+#   state      header   buttons
+#   checking   yellow   Resolve · Create meeting · Page on-call now      (posted when someone acknowledges)
+#   paged      red      none  (the PagerDuty card takes over)
+#   resolved   green    none
+# Button values carry kind="incident" so pipeline.handle_card_action can tell them from PagerDuty cards.
+
+INCIDENT_STYLE: Dict[str, Dict[str, Any]] = {
+    "checking": {"color": "yellow", "buttons": ["resolve", "meeting", "page"]},
+    "paged":    {"color": "red",    "buttons": []},
+    "resolved": {"color": "green",  "buttons": []},
+}
+
+
+def incident_card(incident_id: int, state: str, rule_name: str, severity: str = "", firing_count: int = 1,
+                  deadline_text: str = "", history: List[str] | None = None, meeting_url: str = "") -> Dict[str, Any]:
+    style = INCIDENT_STYLE.get(state) or INCIDENT_STYLE["checking"]
+    iid = str(incident_id)
+    facts = [f"**Severity:** {severity or '?'} · **Instances:** {firing_count} · **Incident:** #{iid}"]
+    if deadline_text and state == "checking":
+        facts.append(f"⏱ {deadline_text}")
+    if meeting_url and state != "resolved":
+        facts.append(f"📞 **Meeting:** [Join the incident call]({meeting_url})")
+    actions: List[Dict[str, Any]] = []
+    for b in style["buttons"]:
+        if b == "resolve":
+            actions.append(_button("Resolve", "bot_resolve", iid, "primary", kind="incident"))
+        elif b == "meeting" and not meeting_url:
+            actions.append(_button("Create meeting", "meeting", iid, "default", kind="incident"))
+        elif b == "page":
+            actions.append(_button("Page on-call now", "bot_page", iid, "danger", kind="incident"))
+    elements: List[Dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(facts)}}]
+    if history:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(history)}})
+    if actions:
+        elements.append({"tag": "action", "actions": actions})
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {"template": style["color"], "title": _plain(rule_name or f"Incident #{iid}")},
+        "elements": elements,
+    }
 
 
 def _ignore_select(incident_id: str) -> Dict[str, Any]:

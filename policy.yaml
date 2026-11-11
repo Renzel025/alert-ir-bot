@@ -1,14 +1,26 @@
 # Alert policy (temporary home; moves to Lark Base later).
-# Lookup order: defaults -> first matching rule -> severity_always_page (hard floor).
+# Lookup order: defaults -> first matching rule (by rule name) -> severity_overrides -> severity_always_page (hard floor).
+#
+# Two clocks, both counted from the moment the alert arrived:
+#   wait_minutes    nobody acknowledged within N min -> page.  0 = no such deadline (normal thresholds)
+#   firing_minutes  still open N min after the alert started, acknowledged or not -> page
+# "normal" from the tagged check person resolves at any time; "acknowledge" posts the incident card.
 
 defaults:
   always_page: false
   check_person: ""            # Lark open_id (ou_...) of the person to tag when the AI says "can wait"
   check_person_name: ""       # display name for the @mention
-  wait_minutes: 5             # N min before silence = page
+  wait_minutes: 0             # normal threshold: no must-acknowledge deadline
+  firing_minutes: 20          # ...but firing for 20 min -> page
 
 # Severities that always page, whatever the rule says.
 severity_always_page: ["P0", "critical"]
+
+# Per-severity deadlines, applied after the name rules. Keys are matched case-insensitively.
+severity_overrides:
+  P1:      {wait_minutes: 5}  # high threshold: no acknowledgement within 5 min -> page
+  high:    {wait_minutes: 5}
+  error:   {wait_minutes: 5}
 
 # First match wins. `match` is a case-insensitive regex on the rule name.
 rules:
@@ -17,4 +29,4 @@ rules:
   - match: "provider.*drop"
     check_person: ""          # ou_...
     check_person_name: ""
-    wait_minutes: 10
+    firing_minutes: 30

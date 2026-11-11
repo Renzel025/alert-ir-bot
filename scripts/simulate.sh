@@ -2,7 +2,7 @@
 # Local end-to-end test without Lark (DRY_RUN=1): fake the events Lark would send.
 #   ./scripts/simulate.sh alert          # a MonitorFlow alert arrives
 #   ./scripts/simulate.sh reply normal   # the check person replies in the thread
-#   ./scripts/simulate.sh reply escalate
+#   ./scripts/simulate.sh reply acknowledge
 #   ./scripts/simulate.sh pd acknowledged
 # Needs ALERT_CHAT_ID, ALERT_BOT_SENDER_ID and a check_person in policy.yaml set to the values below.
 set -euo pipefail

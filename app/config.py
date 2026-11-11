@@ -58,7 +58,8 @@ AI_TIMEOUT_SEC = _int("AI_TIMEOUT_SEC", 90)                  # a hung model call
 CLAUDE_BIN = _env("CLAUDE_BIN", "claude")                    # path to the Claude Code CLI if not on PATH
 
 # --- Behaviour -------------------------------------------------------------------
-DEFAULT_WAIT_MINUTES = _int("DEFAULT_WAIT_MINUTES", 5)      # N min for the check person
+DEFAULT_WAIT_MINUTES = _int("DEFAULT_WAIT_MINUTES", 0)      # must-acknowledge deadline for the check person; 0 = none
+DEFAULT_FIRING_MINUTES = _int("DEFAULT_FIRING_MINUTES", 20) # still open this long after the alert started → page
 MEETING_HOURS = _int("MEETING_HOURS", 24)                   # "Create meeting" on the card: reservation lifetime
 SWEEP_INTERVAL_SEC = _int("SWEEP_INTERVAL_SEC", 30)         # how often timeouts are checked
 HTTP_TIMEOUT = _int("HTTP_TIMEOUT_SEC", 10)

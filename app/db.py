@@ -19,13 +19,13 @@ CREATE TABLE IF NOT EXISTS incidents (
   fingerprint TEXT NOT NULL,
   rule_name TEXT NOT NULL,
   severity TEXT,
-  status TEXT NOT NULL,                -- new | waiting | paged | resolved
+  status TEXT NOT NULL,                -- new | waiting | checking | paged | resolved
   chat_id TEXT,
   alert_message_id TEXT,               -- the MonitorFlow message in the alert group
   thread_root_message_id TEXT,         -- message we reply under
   thread_id TEXT,                      -- Lark topic id (omt_...), if Lark returned one
   check_person_open_id TEXT,
-  wait_deadline REAL,                  -- unix seconds; set only while status = waiting
+  wait_deadline REAL,                  -- unix seconds; set while status = waiting (wait_minutes) or checking (ack_minutes)
   page_attempts INTEGER DEFAULT 0,
   pd_dedup_key TEXT,
   policy_json TEXT,
@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS pd_cards (
 # Columns added after a table already existed on someone's disk: (table, column, type)
 _MIGRATIONS = [
     ("incidents", "prompt_message_id", "TEXT"),   # the bot's group message asking the check person; replies to it count
+    ("incidents", "acked_by", "TEXT"),            # open_id of whoever said "acknowledge" (status checking)
+    ("incidents", "card_message_id", "TEXT"),     # the bot's own incident card (posted on acknowledge, repainted after)
+    ("incidents", "card_history_json", "TEXT"),   # lines shown on that card
+    ("incidents", "meeting_url", "TEXT"),         # Lark meeting created from that card
+    ("incidents", "meeting_reserve_id", "TEXT"),
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
@@ -207,7 +212,7 @@ def find_incident_by_dedup(dedup_key: str) -> Optional[Dict[str, Any]]:
 def due_waiting(now: float) -> List[Dict[str, Any]]:
     with _LOCK:
         return _all(_conn().execute(
-            "SELECT * FROM incidents WHERE status = 'waiting' AND wait_deadline IS NOT NULL AND wait_deadline <= ?",
+            "SELECT * FROM incidents WHERE status IN ('waiting', 'checking') AND wait_deadline IS NOT NULL AND wait_deadline <= ?",
             (now,),
         ))
 

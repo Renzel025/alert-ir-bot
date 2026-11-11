@@ -26,15 +26,14 @@ from . import policy as policy_mod
 
 log = logging.getLogger("alert-ir")
 
-# Words that decide a check person's reply. Escalate words are checked first so
-# "not normal" never counts as "normal".
-_ESCALATE_WORDS = [
-    "escalate", "page", "call", "not normal", "abnormal", "not ok", "not okay",
-    "real issue", "problem", "broken", "down", "urgent", "p0",
-]
+# Words that decide a reply to the bot's prompt (2026-11-11: no "escalate" word any more; paging is
+# by the two clocks in policy.yaml or the "Page on-call now" button). Negations are checked first so
+# "not normal" never counts as "normal"; it is simply unclear and the bot asks again.
+_NOT_NORMAL_WORDS = ["not normal", "abnormal", "not ok", "not okay", "not fine", "not expected", "isnt normal", "isn't normal"]
+_ACK_WORDS = ["ack", "acked", "acknowledge", "acknowledged", "checking", "on it", "looking", "investigating", "will check"]
 _NORMAL_WORDS = [
-    "its normal", "is normal", "its okay", "its fine", "false alarm", "expected", "no issue",
-    "ignore", "all good", "is safe", "resolved",
+    "normal", "okay", "ok", "fine", "false alarm", "expected", "no issue", "ignore", "all good", "safe",
+    "resolved", "nothing wrong",
 ]
 
 
@@ -166,14 +165,21 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
     if not pol.check_person:
         page(iid, reason="No check person configured for this alert; paging to be safe.", outcome="no_check_person")
         return "paged_no_check_person"
-    deadline = time.time() + pol.wait_minutes * 60
+    # two clocks from the alert's start: wait_minutes (must acknowledge; 0 = none) and firing_minutes (still open)
+    started = float(incident.get("created_at") or time.time())
+    firing_at = started + pol.firing_minutes * 60
+    deadline = min(started + pol.wait_minutes * 60, firing_at) if pol.wait_minutes > 0 else firing_at
     db.update_incident(iid, status="waiting", check_person_open_id=pol.check_person, wait_deadline=deadline)
+    at = time.strftime("%H:%M", time.localtime(deadline))
+    if pol.wait_minutes > 0:
+        clock = f"No acknowledgement within {pol.wait_minutes} min = I page on-call at {at}."
+    else:
+        clock = f"If this is still firing {pol.firing_minutes} min after it started, I page on-call at {at}."
     prompt_id = _reply(
         iid,
-        f"🟡 {alert.rule_name}: AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
-        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply to this message within "
-        f"{pol.wait_minutes} min: 'normal' or 'escalate'. No reply = I page on-call at "
-        f"{time.strftime('%H:%M', time.localtime(deadline))}.",
+        f"🟡 {alert.rule_name} ({alert.severity or '?'}): AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
+        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply to this message: "
+        f"'normal' if it is fine, or 'acknowledge' if you are looking into it. {clock}",
         in_thread=False,     # in the group chat, where everyone sees it
     )
     if prompt_id:
@@ -196,43 +202,68 @@ def _open_thread(incident_id: int, alert_message_id: str, alert: alert_parser.Al
 # --- the check-person path -------------------------------------------------------------
 
 def classify_reply(text: str) -> Optional[str]:
-    """'normal' | 'escalate' | None (unclear). Keywords first; the AI classifier is optional."""
+    """'normal' | 'ack' | None (unclear). Keywords first; the AI classifier is optional."""
     low = (text or "").lower()
-    for w in _ESCALATE_WORDS:
+    for w in _NOT_NORMAL_WORDS:
         if re.search(r"\b" + re.escape(w) + r"\b", low):
-            return "escalate"
+            return None
+    for w in _ACK_WORDS:
+        if re.search(r"\b" + re.escape(w) + r"\b", low):
+            return "ack"
     for w in _NORMAL_WORDS:
         if re.search(r"\b" + re.escape(w) + r"\b", low):
             return "normal"
     try:
-        return ai_triage.classify_reply(text)
+        v = ai_triage.classify_reply(text)
+        return v if v in ("normal", "ack") else None
     except Exception:  # noqa: BLE001 — classifier not wired yet or AI down: stay unclear
         return None
 
 
+def _mention_card(open_id: str) -> str:
+    """@mention markup inside a card (lark_md), which differs from text messages."""
+    return f"<at id={open_id}></at>" if open_id else "someone"
+
+
 def _handle_thread_reply(msg: Dict[str, Any], incident: Dict[str, Any], text: str) -> str:
     iid = int(incident["id"])
-    if incident["status"] != "waiting":
-        db.log_decision(iid, "reply", "context", text[:500], {"sender": msg.get("sender_id", "")})
+    sender = msg.get("sender_id", "")
+    if incident["status"] not in ("waiting", "checking"):
+        db.log_decision(iid, "reply", "context", text[:500], {"sender": sender})
         return "reply_context"
     verdict = classify_reply(text)
-    is_check_person = msg.get("sender_id") == incident.get("check_person_open_id")
-    db.log_decision(iid, "reply", verdict or "unclear", text[:500],
-                    {"sender": msg.get("sender_id", ""), "is_check_person": is_check_person})
+    is_check_person = sender == incident.get("check_person_open_id")
+    db.log_decision(iid, "reply", verdict or "unclear", text[:500], {"sender": sender, "is_check_person": is_check_person})
 
-    if verdict == "escalate":
-        who = "Check person" if is_check_person else "A teammate"
-        page(iid, reason=f"{who} replied: \"{text[:100]}\"", outcome="human_escalate", actor=msg.get("sender_id", ""))
-        return "paged_reply"
+    if verdict == "ack":
+        if incident["status"] == "checking":
+            return "reply_context"                      # already acknowledged; nothing changes
+        acknowledge_incident(iid, actor=sender, text=text)
+        return "acknowledged"
     if verdict == "normal":
         if not is_check_person:
-            _reply(iid, "Noted, but only the tagged check person can mark this normal. Timer still running.")
+            _reply(iid, f"Noted, but only {lark_client.mention(incident.get('check_person_open_id') or '', 'the tagged check person')} "
+                        f"can mark this normal. Clock still running.", in_thread=False)
             return "reply_not_authorized"
-        resolve_normal(iid, actor=msg.get("sender_id", ""), text=text)
+        resolve_normal(iid, actor=sender, text=text)
         return "resolved_normal"
     if is_check_person:
-        _reply(iid, "I couldn't tell if that means normal or escalate. Please reply 'normal' or 'escalate'. Timer still running.")
+        at = time.strftime("%H:%M", time.localtime(float(incident.get("wait_deadline") or time.time())))
+        _reply(iid, f"I couldn't tell what that means. Reply 'normal' if it is fine, or 'acknowledge' if you are looking "
+                    f"into it. Otherwise I page on-call at {at}.", in_thread=False)
     return "reply_unclear"
+
+
+def acknowledge_incident(incident_id: int, actor: str, text: str = "") -> None:
+    """Someone is looking into it: status checking, the firing clock keeps running, and the bot's own
+    incident card appears in the group with Resolve / Create meeting / Page on-call now."""
+    inc = db.get_incident(incident_id) or {}
+    pol = json.loads(inc.get("policy_json") or "{}")
+    firing_minutes = int(pol.get("firing_minutes") or config.DEFAULT_FIRING_MINUTES)
+    deadline = float(inc.get("created_at") or time.time()) + firing_minutes * 60
+    db.update_incident(incident_id, status="checking", wait_deadline=deadline, acked_by=actor)
+    db.log_decision(incident_id, "reply", "ack", text[:500], {"sender": actor})
+    _paint_incident_card(incident_id, line=f"🔎 Acknowledged by {_mention_card(actor)} {time.strftime('%H:%M')}")
 
 
 def resolve_normal(incident_id: int, actor: str, text: str) -> None:
@@ -244,6 +275,80 @@ def resolve_normal(incident_id: int, actor: str, text: str) -> None:
     who = lark_client.mention(actor, pol.get("check_person_name") or "") if actor else "the check person"
     _reply(incident_id, f"🟢 {inc.get('rule_name') or 'Alert'}: {who} checked and says it is normal (\"{text[:80]}\"). "
                         f"Incident #{incident_id} resolved, no page. If it fires again, a new incident opens.", in_thread=False)
+    if inc.get("card_message_id"):
+        _paint_incident_card(incident_id, line=f"🟢 Normal, resolved by {_mention_card(actor)} {time.strftime('%H:%M')}")
+    _end_incident_meeting(incident_id)
+
+
+def _paint_incident_card(incident_id: int, line: str = "") -> None:
+    """Post (first time) or repaint the bot's own incident card from the incidents row.
+    Lark errors are logged, never raised."""
+    inc = db.get_incident(incident_id) or {}
+    history = json.loads(inc.get("card_history_json") or "[]")
+    if line:
+        history = (history + [line])[-8:]
+        db.update_incident(incident_id, card_history_json=json.dumps(history, ensure_ascii=False))
+    state = inc.get("status") if inc.get("status") in cards.INCIDENT_STYLE else "checking"
+    alert = json.loads(inc.get("alert_json") or "{}")
+    deadline_text = ""
+    if state == "checking" and inc.get("wait_deadline"):
+        deadline_text = f"I page on-call at {time.strftime('%H:%M', time.localtime(float(inc['wait_deadline'])))} unless resolved."
+    card = cards.incident_card(incident_id, state, inc.get("rule_name") or "", inc.get("severity") or "",
+                               int(alert.get("firing_count") or 1), deadline_text, history, inc.get("meeting_url") or "")
+    try:
+        if inc.get("card_message_id"):
+            lark_client.update_card(inc["card_message_id"], card)
+        else:
+            data = lark_client.post_card(inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID, card)
+            db.update_incident(incident_id, card_message_id=data.get("message_id") or "")
+    except Exception as e:  # noqa: BLE001
+        log.warning("incident card %s: Lark paint failed: %s", incident_id, e)
+
+
+def _post_meeting_message(chat_id: str, title: str, url: str) -> None:
+    """A top-level rich-text message with the meeting link: Lark attaches the live meeting widget
+    (meeting id, who is in, Ended) to it once the meeting starts. Same form as the P0 bot's."""
+    lark_client.post_rich(
+        chat_id, title,
+        [[{"tag": "text", "text": "🚨 Incident meeting created."}],
+         [{"tag": "text", "text": "join in meeting link"}],
+         [{"tag": "a", "text": f"Video meeting—{title}", "href": url}]],
+    )
+
+
+def _do_incident_meeting(incident_id: int, who: str) -> None:
+    """"Create meeting" on the bot's own incident card: one meeting per incident, owned by the clicker."""
+    inc = db.get_incident(incident_id)
+    if not inc or inc.get("status") not in ("waiting", "checking"):
+        return
+    if inc.get("meeting_url"):
+        _paint_incident_card(incident_id)
+        return
+    try:
+        reserve = lark_client.create_meeting(inc.get("rule_name") or f"Incident #{incident_id}", who, config.MEETING_HOURS)
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting for incident %s by %s failed: %s", incident_id, who, e)
+        _paint_incident_card(incident_id, line=f"⚠️ Meeting by {_mention_card(who)} failed: {str(e)[:100]} {time.strftime('%H:%M')}")
+        return
+    db.update_incident(incident_id, meeting_url=reserve["url"], meeting_reserve_id=str(reserve.get("id") or ""))
+    db.log_decision(incident_id, "reply", "meeting", f"{who} {reserve['url']}")
+    _paint_incident_card(incident_id, line=f"📞 Meeting created by {_mention_card(who)} {time.strftime('%H:%M')}")
+    try:
+        _post_meeting_message(inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID, inc.get("rule_name") or "", reserve["url"])
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting message for incident %s failed: %s (link is on the card)", incident_id, e)
+
+
+def _end_incident_meeting(incident_id: int) -> None:
+    inc = db.get_incident(incident_id) or {}
+    rid = inc.get("meeting_reserve_id") or ""
+    if not rid:
+        return
+    try:
+        lark_client.delete_meeting(rid)
+        db.update_incident(incident_id, meeting_reserve_id="")
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not cancel meeting %s for incident %s: %s (expires on its own)", rid, incident_id, e)
 
 
 def sweep_timeouts() -> int:
@@ -251,7 +356,14 @@ def sweep_timeouts() -> int:
     n = 0
     for inc in db.due_waiting(time.time()):
         pol = json.loads(inc.get("policy_json") or "{}")
-        page(int(inc["id"]), reason=f"No reply from check person within {pol.get('wait_minutes', '?')} min.", outcome="timeout_paged")
+        open_min = int((time.time() - float(inc.get("created_at") or time.time())) / 60)
+        if inc.get("status") == "checking":
+            reason, outcome = f"Still firing {open_min} min after it started (acknowledged, not resolved).", "firing_timeout_paged"
+        elif int(pol.get("wait_minutes") or 0) > 0 and open_min < int(pol.get("firing_minutes") or 0):
+            reason, outcome = f"No acknowledgement within {pol.get('wait_minutes')} min.", "timeout_paged"
+        else:
+            reason, outcome = f"Still firing {open_min} min after it started, nobody acknowledged.", "firing_timeout_paged"
+        page(int(inc["id"]), reason=reason, outcome=outcome)
         n += 1
     return n
 
@@ -287,6 +399,8 @@ def page(incident_id: int, reason: str, outcome: str, actor: str = "bot") -> Non
     db.update_incident(incident_id, status="paged", wait_deadline=None)
     db.log_outcome(incident_id, outcome, actor=actor, detail=reason)
     _reply(incident_id, f"📟 {inc['rule_name']}: paging on-call via PagerDuty. {reason}", in_thread=False)
+    if inc.get("card_message_id"):
+        _paint_incident_card(incident_id, line=f"📟 Paged on-call {time.strftime('%H:%M')}: {reason}")
 
 
 def _resolve_from_monitor(incident_id: int) -> None:
@@ -303,6 +417,9 @@ def _resolve_from_monitor(incident_id: int) -> None:
     db.update_incident(incident_id, status="resolved", wait_deadline=None, resolved_at=time.time())
     db.log_outcome(incident_id, result, actor="monitorflow")
     _reply(incident_id, f"🟢 {inc['rule_name']}: MonitorFlow reports the alert resolved. Incident #{incident_id} closed.", in_thread=False)
+    if inc.get("card_message_id"):
+        _paint_incident_card(incident_id, line=f"🟢 Resolved by MonitorFlow {time.strftime('%H:%M')}")
+    _end_incident_meeting(incident_id)
 
 
 # --- PagerDuty status forwarded by Zoho Flow -------------------------------------------
@@ -456,6 +573,8 @@ def _paint_pd_card(pd_id: str, state: str, by: str = "", fields: Optional[Dict[s
         service=_summary_text(fields.get("service")) or None,
         assignees=_summary_text(fields.get("assignees")) or None,
         incident_id=incident_id,
+        meeting_url=str(fields.get("meeting_url") or "") or None,            # carried over from the bot's own card
+        meeting_reserve_id=str(fields.get("meeting_reserve_id") or "") or None,
         history_json=json.dumps(history, ensure_ascii=False),
     )
     card = _render_card(row)
@@ -540,6 +659,8 @@ def handle_pd_status(body: Dict[str, Any]) -> Dict[str, Any]:
         out["card"] = "skipped (stale triggered after resolved)"
     elif pd_id and status in _PD_STATE:
         try:
+            if inc and inc.get("meeting_url") and not (row or {}).get("meeting_url"):
+                body["meeting_url"], body["meeting_reserve_id"] = inc["meeting_url"], inc.get("meeting_reserve_id") or ""
             _paint_pd_card(pd_id, _PD_STATE[status], by=_summary_text(body.get("agent") or body.get("user")),
                            fields=body, incident_id=int(inc["id"]) if inc else None)
             out["card"] = "painted"
@@ -578,6 +699,8 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     incident_id = str(value.get("incident_id") or "")
     who = str((event.get("operator") or {}).get("open_id") or "")
     clicked_message_id = str((event.get("context") or {}).get("open_message_id") or "")
+    if value.get("kind") == "incident":                       # the bot's own incident card, no PagerDuty yet
+        return _handle_incident_card_action(action, incident_id, who)
     if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting"):
         log.warning("card click ignored: value=%s", value)
         return {"toast": {"type": "error", "content": "Unknown button"}}
@@ -590,6 +713,31 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min"}[action]
     return {"toast": {"type": "info", "content": f"{label} in PagerDuty…"}}
+
+
+def _handle_incident_card_action(action: str, incident_id: str, who: str) -> Dict[str, Any]:
+    """Buttons on the bot's own incident card: Resolve (check person only), Page on-call now (anyone),
+    Create meeting. Validated here; the work runs in a thread so Lark gets its toast at once."""
+    if not incident_id.isdigit() or action not in ("bot_resolve", "bot_page", "meeting"):
+        return {"toast": {"type": "error", "content": "Unknown button"}}
+    iid = int(incident_id)
+    inc = db.get_incident(iid)
+    if not inc or inc.get("status") not in ("waiting", "checking"):
+        return {"toast": {"type": "info", "content": "This incident is already closed or paged."}}
+    if action == "bot_resolve" and who != (inc.get("check_person_open_id") or ""):
+        return {"toast": {"type": "error", "content": "Only the tagged check person can mark this normal."}}
+    threading.Thread(target=_do_incident_action, args=(action, iid, who), daemon=True, name=f"act-inc-{iid}").start()
+    return {"toast": {"type": "info", "content": {"bot_resolve": "Resolving as normal…", "bot_page": "Paging on-call…",
+                                                   "meeting": "Creating the incident meeting…"}[action]}}
+
+
+def _do_incident_action(action: str, incident_id: int, who: str) -> None:
+    if action == "bot_page":
+        page(incident_id, reason=f"{_mention_card(who)} pressed Page on-call now.", outcome="human_escalate", actor=who)
+    elif action == "bot_resolve":
+        resolve_normal(incident_id, actor=who, text="Resolve button")
+    elif action == "meeting":
+        _do_incident_meeting(incident_id, who)
 
 
 def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
@@ -620,17 +768,8 @@ def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
     db.upsert_pd_card(incident_id, meeting_url=reserve["url"], meeting_reserve_id=str(reserve.get("id") or "") or None)
     log.info("meeting for %s created by %s: %s", incident_id, who, reserve["url"])
     _paint_pd_card(incident_id, state, message_id=clicked_message_id, extra_line=f"📞 Meeting created by {by}")
-    # Also a message in the group: Lark attaches the live meeting widget (meeting id, who is in, Ended)
-    # to a meeting link in a top-level rich-text message, which a card cannot show. Same form as the P0 bot:
-    # title line, then the link rendered with the meeting's name.
-    title = row.get("title") or incident_id
     try:
-        lark_client.post_rich(
-            row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, title,
-            [[{"tag": "text", "text": "🚨 Incident meeting created."}],
-             [{"tag": "text", "text": "join in meeting link"}],
-             [{"tag": "a", "text": f"Video meeting—{title}", "href": reserve["url"]}]],
-        )
+        _post_meeting_message(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, row.get("title") or incident_id, reserve["url"])
     except Exception as e:  # noqa: BLE001
         log.warning("meeting message for %s failed: %s (link is on the card)", incident_id, e)
     if row.get("incident_id"):
