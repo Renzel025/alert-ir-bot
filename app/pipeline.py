@@ -171,9 +171,10 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
     _reply(
         iid,
         f"🟡 AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
-        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply here within "
+        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply in this thread within "
         f"{pol.wait_minutes} min: 'normal' or 'escalate'. No reply = I page on-call at "
         f"{time.strftime('%H:%M', time.localtime(deadline))}.",
+        in_thread=False,     # verdicts go in the group chat, where everyone sees them; replies come back in the thread
     )
     return "waiting"
 
@@ -235,13 +236,12 @@ def _handle_thread_reply(msg: Dict[str, Any], incident: Dict[str, Any], text: st
 def resolve_normal(incident_id: int, actor: str, text: str) -> None:
     db.update_incident(incident_id, status="resolved", wait_deadline=None, resolved_at=time.time())
     db.log_outcome(incident_id, "human_normal", actor=actor, detail=text[:500])
-    _reply(incident_id, "🟢 Check person says normal. Resolving. If it fires again, a new incident opens.")
-    # the thread is folded away for everyone else: say it in the group too, so nobody keeps looking
+    # in the group chat, not the thread: everyone sees the verdict without opening anything
     inc = db.get_incident(incident_id) or {}
     pol = json.loads(inc.get("policy_json") or "{}")
     who = lark_client.mention(actor, pol.get("check_person_name") or "") if actor else "the check person"
     _reply(incident_id, f"🟢 {inc.get('rule_name') or 'Alert'}: {who} checked and says it is normal (\"{text[:80]}\"). "
-                        f"Incident #{incident_id} resolved, no page.", in_thread=False)
+                        f"Incident #{incident_id} resolved, no page. If it fires again, a new incident opens.", in_thread=False)
 
 
 def sweep_timeouts() -> int:
@@ -280,11 +280,11 @@ def page(incident_id: int, reason: str, outcome: str, actor: str = "bot") -> Non
         db.log_decision(incident_id, "pagerduty", "error", f"{type(e).__name__}: {e}"[:500])
         db.update_incident(incident_id, status="waiting", wait_deadline=time.time() + 60)
         if attempts == 1:
-            _reply(incident_id, f"🚨 Could not reach PagerDuty ({type(e).__name__}). {reason}\nSomeone please call on-call manually. I will keep retrying.")
+            _reply(incident_id, f"🚨 Could not reach PagerDuty ({type(e).__name__}). {reason}\nSomeone please call on-call manually. I will keep retrying.", in_thread=False)
         return
     db.update_incident(incident_id, status="paged", wait_deadline=None)
     db.log_outcome(incident_id, outcome, actor=actor, detail=reason)
-    _reply(incident_id, f"📟 Paging on-call via PagerDuty. {reason}")
+    _reply(incident_id, f"📟 {inc['rule_name']}: paging on-call via PagerDuty. {reason}", in_thread=False)
 
 
 def _resolve_from_monitor(incident_id: int) -> None:
@@ -300,7 +300,7 @@ def _resolve_from_monitor(incident_id: int) -> None:
     result = "monitor_resolved" if inc["status"] == "paged" else "self_resolved"
     db.update_incident(incident_id, status="resolved", wait_deadline=None, resolved_at=time.time())
     db.log_outcome(incident_id, result, actor="monitorflow")
-    _reply(incident_id, "🟢 MonitorFlow reports the alert resolved.")
+    _reply(incident_id, f"🟢 {inc['rule_name']}: MonitorFlow reports the alert resolved. Incident #{incident_id} closed.", in_thread=False)
 
 
 # --- PagerDuty status forwarded by Zoho Flow -------------------------------------------
