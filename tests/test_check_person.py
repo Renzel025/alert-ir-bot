@@ -302,6 +302,24 @@ def test_ignore_on_the_pagerduty_card_mutes_repeats_of_the_alert():
     assert out == "repeat" and "Still firing" in _last("reply")["text"]
 
 
+def test_without_pagerduty_the_bot_card_and_a_group_alarm_replace_the_call():
+    config.PAGERDUTY_ENABLED = False
+    PD.clear()
+    iid = alert("No-pd-rule")
+    assert reply(iid, CP, "acknowledge") == "acknowledged"
+    _wait()
+    assert PD == [] and db.get_incident(iid)["card_message_id"]                  # bot card, PagerDuty never touched
+    assert "I raise the alarm here" in [c for c in LARK if c["op"] == "post_text"][-1]["text"]
+    db.update_incident(iid, wait_deadline=time.time() - 1)
+    assert pipeline.sweep_timeouts() == 1
+    assert PD == [] and db.get_incident(iid)["status"] == "paged"
+    msg = _last("post_text")["text"]
+    assert msg.startswith("🚨 No-pd-rule:") and f'<at user_id="{CP}">' in msg and "this message is the alarm" in msg
+    card = _last("update_card")["card"]
+    assert card["header"]["template"] == "red" and "🚨 Alarm raised" in card["elements"][2]["text"]["content"]
+    config.PAGERDUTY_ENABLED = True
+
+
 def test_reply_words():
     c = pipeline.classify_reply
     assert c("normal") == "normal" and c("this is normal") == "normal" and c("ok fine") == "normal"

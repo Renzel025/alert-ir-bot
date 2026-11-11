@@ -273,13 +273,13 @@ def acknowledge_incident(incident_id: int, actor: str, text: str = "") -> None:
     db.update_incident(incident_id, status="checking", wait_deadline=deadline, acked_by=actor)
     db.log_decision(incident_id, "reply", "ack", text[:500], {"sender": actor})
     who = lark_client.mention(actor, pol.get("check_person_name") or "") if actor else "someone"
-    if _open_in_pagerduty(incident_id, acknowledged=True, reason=f"Acknowledged in Lark by {actor}"):
+    if config.PAGERDUTY_ENABLED and _open_in_pagerduty(incident_id, acknowledged=True, reason=f"Acknowledged in Lark by {actor}"):
         _reply(incident_id, f"🔎 {inc.get('rule_name') or 'Alert'}: {who} is looking into it. Opened in PagerDuty as "
                             f"acknowledged (no call). Still open at {at} = PagerDuty calls on-call.", in_thread=False)
     else:
-        _reply(incident_id, f"🔎 {inc.get('rule_name') or 'Alert'}: {who} is looking into it. PagerDuty is unreachable "
-                            f"right now, so here is the incident card instead. Still open at {at} = I page on-call.",
-               in_thread=False)
+        why = ("Still open at {at} = I raise the alarm here." if not config.PAGERDUTY_ENABLED
+               else "PagerDuty is unreachable right now, so here is the incident card instead. Still open at {at} = I page on-call.")
+        _reply(incident_id, f"🔎 {inc.get('rule_name') or 'Alert'}: {who} is looking into it. {why.format(at=at)}", in_thread=False)
         _paint_incident_card(incident_id, line=f"🔎 Acknowledged by {_mention_card(actor)} {time.strftime('%H:%M')}")
         _start_incident_ai_note(incident_id, "acknowledged", f"acknowledged by {actor}")
 
@@ -484,6 +484,18 @@ def page(incident_id: int, reason: str, outcome: str, actor: str = "bot") -> Non
         return
     alert = json.loads(inc.get("alert_json") or "{}")
     summary = f"[{inc.get('severity') or '?'}] {inc['rule_name']} ({alert.get('firing_count', 1)} instance(s))"
+    if not config.PAGERDUTY_ENABLED:
+        # no PagerDuty in this setup: the "page" is a loud alarm in the group, @check person, and the card goes red
+        pol = json.loads(inc.get("policy_json") or "{}")
+        who = lark_client.mention(inc.get("check_person_open_id") or "", pol.get("check_person_name") or "") \
+            if inc.get("check_person_open_id") else "everyone"
+        db.update_incident(incident_id, status="paged", wait_deadline=None)
+        db.log_outcome(incident_id, outcome, actor=actor, detail=reason)
+        _reply(incident_id, f"🚨 {inc['rule_name']}: {reason} {who} this needs someone now (no PagerDuty in this setup, "
+                            f"so this message is the alarm).", in_thread=False)
+        if inc.get("card_message_id"):
+            _paint_incident_card(incident_id, line=f"🚨 Alarm raised {time.strftime('%H:%M')}: {reason}")
+        return
     attempts = int(inc.get("page_attempts") or 0) + 1
     db.update_incident(incident_id, page_attempts=attempts)
     try:
