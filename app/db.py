@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS pd_cards (
 
 # Columns added after a table already existed on someone's disk: (table, column, type)
 _MIGRATIONS = [
+    ("incidents", "prompt_message_id", "TEXT"),   # the bot's group message asking the check person; replies to it count
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
@@ -183,9 +184,10 @@ def find_incident_by_thread(ids: List[str]) -> Optional[Dict[str, Any]]:
     with _LOCK:
         return _one(_conn().execute(
             f"SELECT * FROM incidents WHERE status != 'resolved' AND "
-            f"(thread_root_message_id IN ({marks}) OR thread_id IN ({marks}) OR alert_message_id IN ({marks})) "
+            f"(thread_root_message_id IN ({marks}) OR thread_id IN ({marks}) OR alert_message_id IN ({marks}) "
+            f"OR prompt_message_id IN ({marks})) "
             f"ORDER BY id DESC LIMIT 1",
-            (*ids, *ids, *ids),
+            (*ids, *ids, *ids, *ids),
         ))
 
 

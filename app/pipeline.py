@@ -168,14 +168,16 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
         return "paged_no_check_person"
     deadline = time.time() + pol.wait_minutes * 60
     db.update_incident(iid, status="waiting", check_person_open_id=pol.check_person, wait_deadline=deadline)
-    _reply(
+    prompt_id = _reply(
         iid,
-        f"🟡 AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
-        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply in this thread within "
+        f"🟡 {alert.rule_name}: AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
+        f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply to this message within "
         f"{pol.wait_minutes} min: 'normal' or 'escalate'. No reply = I page on-call at "
         f"{time.strftime('%H:%M', time.localtime(deadline))}.",
-        in_thread=False,     # verdicts go in the group chat, where everyone sees them; replies come back in the thread
+        in_thread=False,     # in the group chat, where everyone sees it
     )
+    if prompt_id:
+        db.update_incident(iid, prompt_message_id=prompt_id)   # replies to this message count as answers too
     return "waiting"
 
 
@@ -670,21 +672,23 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
 
 # --- helpers ----------------------------------------------------------------------------
 
-def _reply(incident_id: int, text: str, in_thread: bool = True) -> None:
+def _reply(incident_id: int, text: str, in_thread: bool = True) -> str:
     """in_thread=True: reply inside the incident's topic thread. in_thread=False: a new top-level
     message in the group chat, so everyone sees it without opening the thread (Lark keeps any reply
     to a topic root inside the topic, even with reply_in_thread=false, verified 2026-11-11).
-    A Lark failure must never stop the pipeline."""
+    Returns the new message id ("" on failure). A Lark failure must never stop the pipeline."""
     inc = db.get_incident(incident_id) or {}
     try:
         if in_thread:
             root = inc.get("thread_root_message_id") or ""
             if not root:
                 log.warning("incident %s has no thread root; wanted to say: %s", incident_id, text)
-                return
-            lark_client.reply_text(root, text, in_thread=True)
+                return ""
+            data = lark_client.reply_text(root, text, in_thread=True)
         else:
             chat = inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID or config.ALERT_CHAT_ID
-            lark_client.post_text(chat, text)
+            data = lark_client.post_text(chat, text)
+        return str((data or {}).get("message_id") or "")
     except Exception as e:  # noqa: BLE001
         log.warning("Lark reply failed for incident %s: %s", incident_id, e)
+        return ""
