@@ -89,6 +89,7 @@ _MIGRATIONS = [
     ("incidents", "meeting_url", "TEXT"),         # Lark meeting created from that card
     ("incidents", "meeting_reserve_id", "TEXT"),
     ("incidents", "muted_until", "REAL"),         # "Ignore for N min" on the PagerDuty card: repeats stay silent until then
+    ("incidents", "pd_opened_at", "REAL"),        # the PagerDuty incident exists (opened on 'acknowledge' or by page())
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)

@@ -43,7 +43,20 @@ lark_client.update_card = lambda mid, card: _rec("update_card", to=mid, card=car
 lark_client.post_rich = lambda chat, title, lines: _rec("post_rich", chat=chat, title=title, lines=lines)
 lark_client.create_meeting = lambda topic, owner, hours=24: (MEETINGS.append(owner) or {"id": f"rsv{len(MEETINGS)}", "url": f"https://vc/{len(MEETINGS)}"})
 lark_client.delete_meeting = lambda rid: DELETED.append(rid)
-pagerduty.trigger = lambda dedup, summary, sev, details: (PD.append({"dedup": dedup, "summary": summary}) or {"status": "success"})
+pagerduty.trigger = lambda dedup, summary, sev, details: (PD.append({"dedup": dedup, "summary": summary, "op": "trigger"}) or {"status": "success"})
+pagerduty.acknowledge = lambda dedup: (PD.append({"dedup": dedup, "op": "acknowledge"}) or {"status": "success"})
+pagerduty.resolve = lambda dedup: (PD.append({"dedup": dedup, "op": "resolve"}) or {"status": "success"})
+PD_DOWN = {"on": False}
+_real_trigger = pagerduty.trigger
+
+
+def _trigger_maybe_down(dedup, summary, sev, details):
+    if PD_DOWN["on"]:
+        raise pagerduty.PagerDutyError("trigger: HTTP 503")
+    return _real_trigger(dedup, summary, sev, details)
+
+
+pagerduty.trigger = _trigger_maybe_down
 ai_triage.triage = lambda alert, pol, cases: ai_triage.TriageResult(decision="can_wait", reasoning="stub", confidence="low")
 policy_mod.lookup = lambda rule, sev: policy_mod.Policy(**{**POLICY.to_dict()})
 
@@ -90,9 +103,10 @@ def _facts(card):
     return card["elements"][0]["text"]["content"]
 
 
-# --- scenario A: normal threshold, acknowledged, resolved as normal ------------------------
+# --- scenario A: normal threshold, acknowledged while PagerDuty is DOWN (bot card fallback), resolved as normal
 
 def test_prompt_goes_to_the_group_with_the_firing_clock():
+    PD_DOWN["on"] = True
     iid = alert("Bot-test")
     inc = db.get_incident(iid)
     msg = _last("post_text")
@@ -109,12 +123,13 @@ def test_not_normal_is_unclear_not_escalate():
     assert db.get_incident(iid)["status"] == "waiting"
 
 
-def test_acknowledge_by_anyone_posts_the_yellow_card():
+def test_acknowledge_with_pagerduty_down_posts_the_bot_card():
     iid = db.find_open_incident("bot-test")["id"]
     assert reply(iid, MATE, "ack, checking now") == "acknowledged"
     inc = db.get_incident(iid)
-    assert inc["status"] == "checking" and inc["acked_by"] == MATE
+    assert inc["status"] == "checking" and inc["acked_by"] == MATE and not inc["pd_opened_at"]
     assert abs(inc["wait_deadline"] - (inc["created_at"] + 20 * 60)) < 1      # firing clock unchanged
+    assert "PagerDuty is unreachable" in _last("post_text")["text"]
     card = _last("post_card")["card"]
     assert card["header"]["template"] == "yellow" and card["header"]["title"]["content"] == "Bot-test"
     assert _buttons(card) == ["Resolve", "Create meeting", "Page on-call now"]
@@ -154,7 +169,8 @@ def test_normal_from_check_person_resolves_and_cancels_the_meeting():
     iid = db.find_open_incident("bot-test")["id"]
     assert reply(iid, CP, "normal") == "resolved_normal"
     inc = db.get_incident(iid)
-    assert inc["status"] == "resolved" and PD == []
+    assert inc["status"] == "resolved" and PD == []                            # never reached PagerDuty
+    PD_DOWN["on"] = False
     assert "🟢 Bot-test:" in _last("post_text")["text"] and "no page" in _last("post_text")["text"]
     card = _last("update_card")["card"]
     assert card["header"]["template"] == "green" and _buttons(card) == [] and "Join the incident call" not in _facts(card)
@@ -176,35 +192,57 @@ def test_no_ack_in_time_pages():
     db.update_incident(iid, wait_deadline=time.time() - 1)                   # pretend 5 min passed
     assert pipeline.sweep_timeouts() == 1
     inc = db.get_incident(iid)
-    assert inc["status"] == "paged" and len(PD) == 1 and PD[0]["dedup"] == inc["pd_dedup_key"]
+    assert inc["status"] == "paged" and [p["op"] for p in PD] == ["trigger"] and PD[0]["dedup"] == inc["pd_dedup_key"]
     assert "No acknowledgement within 5 min" in _last("post_text")["text"]
 
 
-# --- scenario C: acknowledged, but still firing after the window ---------------------------
+# --- scenario C: acknowledged → opened in PagerDuty as acknowledged; still firing after the window → re-trigger
 
-def test_ack_then_firing_window_passes_pages_and_paints_the_card_red():
+def test_acknowledge_opens_pagerduty_already_acknowledged():
+    PD.clear()
     POLICY.wait_minutes = 5
     iid = alert("Provider-drop", "P1")
+    n_cards = len([c for c in LARK if c["op"] == "post_card"])
     assert reply(iid, CP, "on it") == "acknowledged"
     inc = db.get_incident(iid)
+    assert inc["status"] == "checking" and inc["pd_opened_at"]
+    assert [p["op"] for p in PD] == ["trigger", "acknowledge"] and PD[0]["dedup"] == inc["pd_dedup_key"]
     assert abs(inc["wait_deadline"] - (inc["created_at"] + 20 * 60)) < 1      # ack swaps the 5 min clock for the firing clock
+    assert "Opened in PagerDuty as acknowledged (no call)" in _last("post_text")["text"]
+    assert len([c for c in LARK if c["op"] == "post_card"]) == n_cards       # no bot card: the PagerDuty card is the card
+
+
+def test_normal_after_ack_resolves_pagerduty_too():
+    iid = db.find_open_incident("provider-drop")["id"]
+    assert reply(iid, CP, "all good, normal") == "resolved_normal"
+    assert [p["op"] for p in PD] == ["trigger", "acknowledge", "resolve"]
+
+
+def test_ack_then_firing_window_passes_retriggers_pagerduty():
+    PD.clear()
+    iid = alert("Provider-drop-2", "P1")
+    assert reply(iid, CP, "ack") == "acknowledged"
     db.update_incident(iid, wait_deadline=time.time() - 1)
     assert pipeline.sweep_timeouts() == 1
-    assert db.get_incident(iid)["status"] == "paged" and len(PD) == 2
+    assert db.get_incident(iid)["status"] == "paged"
+    assert [p["op"] for p in PD] == ["trigger", "acknowledge", "trigger"]    # same dedup key: PagerDuty re-opens and calls
     assert "Still firing" in _last("post_text")["text"] and "acknowledged, not resolved" in _last("post_text")["text"]
+
+
+# --- scenario D: Page on-call now button (bot card fallback) ------------------------------
+
+def test_page_now_button_pages_for_anyone():
+    PD.clear()
+    POLICY.wait_minutes = 0
+    iid = alert("Cashier-errors")
+    PD_DOWN["on"] = True
+    reply(iid, MATE, "checking")                                              # PagerDuty down → bot card
+    PD_DOWN["on"] = False
+    assert click(iid, "bot_page", MATE)["toast"]["content"] == "Paging on-call…"
+    assert db.get_incident(iid)["status"] == "paged" and [p["op"] for p in PD] == ["trigger"]
     card = _last("update_card")["card"]
     assert card["header"]["template"] == "red" and _buttons(card) == []
     assert "📟 Paged on-call" in card["elements"][2]["text"]["content"]
-
-
-# --- scenario D: Page on-call now button --------------------------------------------------
-
-def test_page_now_button_pages_for_anyone():
-    POLICY.wait_minutes = 0
-    iid = alert("Cashier-errors")
-    reply(iid, MATE, "checking")
-    assert click(iid, "bot_page", MATE)["toast"]["content"] == "Paging on-call…"
-    assert db.get_incident(iid)["status"] == "paged" and len(PD) == 3
     assert click(iid, "bot_page", MATE)["toast"]["content"] == "This incident is already closed or paged."
 
 

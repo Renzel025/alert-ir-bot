@@ -53,6 +53,12 @@ def trigger(dedup_key: str, summary: str, severity: str, custom_details: Dict[st
 def resolve(dedup_key: str) -> Dict[str, Any]:
     return _send("resolve", dedup_key)
 
+
+def acknowledge(dedup_key: str) -> Dict[str, Any]:
+    """Events API acknowledge on our own dedup key: used right after trigger() when someone replied
+    'acknowledge' in Lark, so the incident exists in PagerDuty but is already owned."""
+    return _send("acknowledge", dedup_key)
+
 def get_incident(incident_id: str) -> Dict[str, Any]:
     """Read one incident (REST). Used to confirm an id exists before the bot paints a card for an
     incident it has never seen, so a forged /pagerduty/status call cannot create fake cards.
