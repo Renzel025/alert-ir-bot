@@ -137,7 +137,7 @@ def test_create_meeting_on_the_incident_card():
     card = _last("update_card")["card"]
     assert "[Join the incident call](https://vc/1)" in _facts(card)
     assert _buttons(card) == ["Resolve", "Page on-call now"]                 # button gone once a link exists
-    assert _last("post_rich")["lines"][-1][0]["href"] == "https://vc/1"
+    assert _last("post_text")["text"].endswith("join in meeting link\nhttps://vc/1")
     click(iid, "meeting", MATE)
     assert MEETINGS == [CP]                                                  # one meeting per incident
 

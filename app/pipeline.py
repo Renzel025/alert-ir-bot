@@ -306,14 +306,10 @@ def _paint_incident_card(incident_id: int, line: str = "") -> None:
 
 
 def _post_meeting_message(chat_id: str, title: str, url: str) -> None:
-    """A top-level rich-text message with the meeting link: Lark attaches the live meeting widget
-    (meeting id, who is in, Ended) to it once the meeting starts. Same form as the P0 bot's."""
-    lark_client.post_rich(
-        chat_id, title,
-        [[{"tag": "text", "text": "🚨 Incident meeting created."}],
-         [{"tag": "text", "text": "join in meeting link"}],
-         [{"tag": "a", "text": f"Video meeting—{title}", "href": url}]],
-    )
+    """A top-level PLAIN-TEXT message with the raw meeting URL on its own line: that is what Lark
+    unfurls into the native meeting preview (participants, timer, Joined/Ended). Copied from the P0
+    bot (lark-ops-ai, cards.build_p0_meeting_created_text): no card, no markdown, no titled link."""
+    lark_client.post_text(chat_id, f"{title}\n\n🚨 Incident meeting created.\n\njoin in meeting link\n{url}")
 
 
 def _do_incident_meeting(incident_id: int, who: str) -> None:

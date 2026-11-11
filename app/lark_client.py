@@ -147,7 +147,9 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     payload = {
         "end_time": str(int(time.time()) + hours * 3600),
         "owner_id": owner_open_id,
-        "meeting_settings": {"topic": topic[:100]},
+        # meeting_initial_type 1 = multi-person meeting (same as the P0 bot); without it Lark does not
+        # attach the live meeting preview (participants, timer, Ended) to the link message
+        "meeting_settings": {"topic": topic[:100], "meeting_initial_type": 1},
     }
     r = requests.post(
         f"{config.LARK_BASE}/vc/v1/reserves/apply?user_id_type=open_id",
