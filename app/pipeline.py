@@ -273,12 +273,17 @@ def acknowledge_incident(incident_id: int, actor: str, text: str = "") -> None:
     db.update_incident(incident_id, status="checking", wait_deadline=deadline, acked_by=actor)
     db.log_decision(incident_id, "reply", "ack", text[:500], {"sender": actor})
     who = lark_client.mention(actor, pol.get("check_person_name") or "") if actor else "someone"
-    if config.PAGERDUTY_ENABLED and _open_in_pagerduty(incident_id, acknowledged=True, reason=f"Acknowledged in Lark by {actor}"):
+    use_pd = config.PAGERDUTY_ENABLED and config.PD_ON_ACKNOWLEDGE
+    if use_pd and _open_in_pagerduty(incident_id, acknowledged=True, reason=f"Acknowledged in Lark by {actor}"):
         _reply(incident_id, f"🔎 {inc.get('rule_name') or 'Alert'}: {who} is looking into it. Opened in PagerDuty as "
                             f"acknowledged (no call). Still open at {at} = PagerDuty calls on-call.", in_thread=False)
     else:
-        why = ("Still open at {at} = I raise the alarm here." if not config.PAGERDUTY_ENABLED
-               else "PagerDuty is unreachable right now, so here is the incident card instead. Still open at {at} = I page on-call.")
+        if not config.PAGERDUTY_ENABLED:
+            why = "Still open at {at} = I raise the alarm here."
+        elif use_pd:
+            why = "PagerDuty is unreachable right now, so here is the incident card instead. Still open at {at} = I page on-call."
+        else:
+            why = "Still open at {at} = I page on-call via PagerDuty."
         _reply(incident_id, f"🔎 {inc.get('rule_name') or 'Alert'}: {who} is looking into it. {why.format(at=at)}", in_thread=False)
         _paint_incident_card(incident_id, line=f"🔎 Acknowledged by {_mention_card(actor)} {time.strftime('%H:%M')}")
         _start_incident_ai_note(incident_id, "acknowledged", f"acknowledged by {actor}")

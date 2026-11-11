@@ -19,6 +19,7 @@ config.ALERT_CHAT_ID = "oc_test"
 config.FIXED_GROUP_CHAT_ID = "oc_test"
 config.ALERT_BOT_SENDER_ID = "cli_alertbot"
 config.AI_NOTES = False
+config.PD_ON_ACKNOWLEDGE = True        # most tests below exercise the acknowledge → PagerDuty path; the default (off) has its own test
 db.init()
 
 CP = "ou_checkperson"
@@ -318,6 +319,21 @@ def test_without_pagerduty_the_bot_card_and_a_group_alarm_replace_the_call():
     card = _last("update_card")["card"]
     assert card["header"]["template"] == "red" and "🚨 Alarm raised" in card["elements"][2]["text"]["content"]
     config.PAGERDUTY_ENABLED = True
+
+
+def test_default_acknowledge_stays_in_lark_and_pagerduty_only_on_timeout():
+    config.PD_ON_ACKNOWLEDGE = False
+    PD.clear()
+    iid = alert("Lark-only-ack")
+    assert reply(iid, MATE, "ack") == "acknowledged"
+    _wait()
+    assert PD == [] and db.get_incident(iid)["card_message_id"]                  # bot card, nothing in PagerDuty yet
+    assert "I page on-call via PagerDuty" in [c for c in LARK if c["op"] == "post_text"][-1]["text"]
+    assert _buttons(_last("post_card")["card"]) == ["Resolve", "Create meeting", "Page on-call now"]
+    db.update_incident(iid, wait_deadline=time.time() - 1)
+    assert pipeline.sweep_timeouts() == 1
+    assert [p["op"] for p in PD] == ["trigger"] and db.get_incident(iid)["status"] == "paged"   # PagerDuty only now
+    config.PD_ON_ACKNOWLEDGE = True
 
 
 def test_reply_words():
