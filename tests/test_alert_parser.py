@@ -116,6 +116,7 @@ def test_failed_test_run_is_a_high_alert_per_provider():
     assert a.firing_count == 2 and [i["step"] for i in a.instances] == ["Enter provider game", "Place bet"]
     assert a.alert_value == "Enter provider game ❌; Place bet ❌"
     assert a.labels == {"game": "5 God beasts", "duration": "1m 25s"} and not a.is_test
+    assert a.source == "test-automation" and ap.parse_card(THRESHOLD_ALERT).source == "threshold"
 
 
 def test_warned_test_run_is_a_warning():

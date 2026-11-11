@@ -336,6 +336,15 @@ def test_default_acknowledge_stays_in_lark_and_pagerduty_only_on_timeout():
     config.PD_ON_ACKNOWLEDGE = True
 
 
+def test_alert_sources_filter_ignores_threshold_cards():
+    config.ALERT_SOURCES = {"test-automation"}
+    text = "[FIRING:1] Threshold-only\nSeverity: WARNING\nalert time: 2026-11-11 12:00:00\nalert value: x"   # source = threshold
+    out = pipeline.handle_message({"message_id": "om_alert_thr", "chat_id": "oc_test", "sender_id": "cli_alertbot",
+                                   "message_type": "text", "content": json.dumps({"text": text})})
+    assert out == "ignored_source" and db.find_open_incident("threshold-only") is None
+    config.ALERT_SOURCES = {"threshold", "test-automation"}
+
+
 def test_reply_words():
     c = pipeline.classify_reply
     assert c("normal") == "normal" and c("this is normal") == "normal" and c("ok fine") == "normal"

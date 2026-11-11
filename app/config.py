@@ -58,6 +58,9 @@ AI_TIMEOUT_SEC = _int("AI_TIMEOUT_SEC", 90)                  # a hung model call
 CLAUDE_BIN = _env("CLAUDE_BIN", "claude")                    # path to the Claude Code CLI if not on PATH
 
 # --- Behaviour -------------------------------------------------------------------
+# Which alert cards open incidents: "threshold" (MonitorFlow / 🚨 CRITICAL cards), "test-automation" (red Web/PC run
+# reports), or both. Renzel 2026-11-11: the server runs with test-automation only.
+ALERT_SOURCES = {s.strip() for s in _env("ALERT_SOURCES", "threshold,test-automation").split(",") if s.strip()}
 PAGERDUTY_ENABLED = _env("PAGERDUTY_ENABLED", "1") == "1"   # 0 = no PagerDuty at all: the bot's own card + a loud group alarm instead of a call
 PD_ON_ACKNOWLEDGE = _env("PD_ON_ACKNOWLEDGE", "0") == "1"  # 1 = 'acknowledge' opens the PagerDuty incident already acknowledged;
                                                            # 0 (default) = PagerDuty only when a clock passes or Page on-call now is pressed

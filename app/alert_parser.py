@@ -65,6 +65,7 @@ class Alert:
     instances: List[Dict[str, str]] = field(default_factory=list)
     labels: Dict[str, str] = field(default_factory=dict)   # ENV / Domain / Platform … from the card
     raw_text: str = ""
+    source: str = "threshold"         # threshold (MonitorFlow / 🚨 CRITICAL cards) | test-automation; config.ALERT_SOURCES filters
 
     @property
     def is_test(self) -> bool:
@@ -259,6 +260,7 @@ def _parse_test_run(target: str, data: Dict[str, Any], content: str) -> Optional
                    for s in bad],
         labels={k: v for k, v in (("game", game), ("duration", duration)) if v},
         raw_text=extract_text("interactive", content),
+        source="test-automation",
     )
 
 

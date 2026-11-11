@@ -105,6 +105,9 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
     if alert is None:
         log.info("alert-bot message did not match template: %r", text[:120])
         return "unparsed"
+    if alert.source not in config.ALERT_SOURCES:
+        log.info("alert from source %r ignored (ALERT_SOURCES=%s): %s", alert.source, ",".join(sorted(config.ALERT_SOURCES)), alert.rule_name)
+        return "ignored_source"
     if alert.is_test:
         lark_client.reply_text(msg["message_id"], "✅ test received", in_thread=True)
         return "test"
