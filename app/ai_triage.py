@@ -85,9 +85,8 @@ def triage(alert: Alert, policy: Policy, past_cases: List[Dict[str, Any]]) -> Tr
 
     # TODO 5 (later): swap step 4 for structured outputs (output_config={"format": {...}}) so the JSON
     #   shape is guaranteed by the API instead of by json.loads + checks. See the docs for messages.parse().
-
-    raise NotImplementedError("ai_triage.triage() not wired yet — see the TODO steps")
-
+    #raise NotImplementedError("ai_triage.triage() not wired yet — see the TODO steps")
+    return TriageResult(decision="can_wait", reasoning="temporary stub: always wait, testing the check-person path", confidence="low")
 
 def classify_reply(text: str) -> Optional[str]:
     """Optional: turn a free-text reply from the check person into "normal" | "escalate" | None.
