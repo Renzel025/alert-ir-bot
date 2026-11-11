@@ -232,7 +232,7 @@ def test_no_ack_in_time_pages():
     assert pipeline.sweep_timeouts() == 1
     inc = db.get_incident(iid)
     assert inc["status"] == "paged" and [p["op"] for p in PD] == ["trigger"] and PD[0]["dedup"] == inc["pd_dedup_key"]
-    assert "No acknowledgement within 5 min" in _last("post_text")["text"]
+    assert not any("paging on-call" in c["text"] for c in LARK if c["op"] == "post_text")   # no 📟 message: the PagerDuty card is the signal
 
 
 # --- scenario C: acknowledged → opened in PagerDuty as acknowledged; still firing after the window → re-trigger
@@ -265,7 +265,7 @@ def test_ack_then_firing_window_passes_retriggers_pagerduty():
     assert pipeline.sweep_timeouts() == 1
     assert db.get_incident(iid)["status"] == "paged"
     assert [p["op"] for p in PD] == ["trigger", "acknowledge", "trigger"]    # same dedup key: PagerDuty re-opens and calls
-    assert "Still firing" in _last("post_text")["text"] and "acknowledged, not resolved" in _last("post_text")["text"]
+    assert "Still firing" not in _last("post_text")["text"]                  # silent in the group; the red card says it
 
 
 # --- scenario D: Page on-call now button (bot card fallback) ------------------------------

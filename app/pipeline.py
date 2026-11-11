@@ -583,7 +583,7 @@ def page(incident_id: int, reason: str, outcome: str, actor: str = "bot") -> Non
         return
     db.update_incident(incident_id, status="paged", wait_deadline=None, pd_opened_at=inc.get("pd_opened_at") or time.time())
     db.log_outcome(incident_id, outcome, actor=actor, detail=reason)
-    _reply(incident_id, f"📟 {inc['rule_name']}: paging on-call via PagerDuty. {reason}", in_thread=False)
+    # no "📟 paging…" message (Renzel 2026-11-11): the red PagerDuty card that follows is the signal
     if inc.get("card_message_id"):
         _paint_incident_card(incident_id, line=f"📟 Paged on-call {time.strftime('%H:%M')}: {reason}")
 
