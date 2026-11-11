@@ -598,8 +598,18 @@ def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
     db.upsert_pd_card(incident_id, meeting_url=reserve["url"])
     log.info("meeting for %s created by %s: %s", incident_id, who, reserve["url"])
     _paint_pd_card(incident_id, state, message_id=clicked_message_id, extra_line=f"📞 Meeting created by {by}")
+    # Also a plain message under the card: Lark turns a meeting link in a message into the live meeting
+    # widget (meeting id, who is in, Ended), which a card cannot show. Same pattern as the P0 bot.
+    text = f"🚨 Incident meeting created for: {row.get('title') or incident_id}\njoin in meeting link\n{reserve['url']}"
+    try:
+        card_msg = clicked_message_id or row.get("lark_message_id") or ""
+        if card_msg:
+            lark_client.reply_text(card_msg, text, in_thread=False)
+        else:
+            lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, text)
+    except Exception as e:  # noqa: BLE001
+        log.warning("meeting message for %s failed: %s (link is on the card)", incident_id, e)
     if row.get("incident_id"):
-        _reply(int(row["incident_id"]), f"Incident call: {reserve['url']}")
         db.log_decision(int(row["incident_id"]), "reply", "meeting", f"{who} {reserve['url']}")
 
 
