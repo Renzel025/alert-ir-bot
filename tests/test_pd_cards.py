@@ -213,6 +213,19 @@ def test_snooze_click_then_ack_event_is_noise():
     assert _history(LARK_CALLS[-1]["card"]).count("Acknowledged") == 1
 
 
+def test_ignore_window_end_is_announced_once():
+    row = db.get_pd_card("Q1")
+    assert abs(row["snoozed_until"] - (__import__("time").time() + 30 * 60)) < 5     # set by the snooze click above
+    db.upsert_pd_card("Q1", snoozed_until=__import__("time").time() - 1)             # pretend 30 min passed
+    assert pipeline.sweep_snoozes() == 1
+    assert 'Ignore time for "card test" is over' in _last("post_text")["text"]
+    card = _last("update")["card"]
+    assert card["header"]["template"] == "yellow"                                     # state only changes on PagerDuty's event
+    assert "⏰ Ignore time over" in _history(card)
+    assert db.get_pd_card("Q1")["snoozed_until"] == 0
+    assert pipeline.sweep_snoozes() == 0                                              # announced once
+
+
 def test_resolve_from_pagerduty_app_strips_buttons():
     zoho("resolved")
     card = LARK_CALLS[-1]["card"]

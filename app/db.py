@@ -93,6 +93,7 @@ _MIGRATIONS = [
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
     ("pd_cards", "meeting_reserve_id", "TEXT"),  # to cancel the reservation when the incident resolves
+    ("pd_cards", "snoozed_until", "REAL"),       # "Ignore for N min": when it ends the bot announces it, then clears this
 ]
 
 
@@ -215,6 +216,14 @@ def due_waiting(now: float) -> List[Dict[str, Any]]:
         return _all(_conn().execute(
             "SELECT * FROM incidents WHERE status IN ('waiting', 'checking') AND wait_deadline IS NOT NULL AND wait_deadline <= ?",
             (now,),
+        ))
+
+
+def due_snoozed(now: float) -> List[Dict[str, Any]]:
+    """PagerDuty cards whose 'Ignore for N min' window has ended and was not announced yet."""
+    with _LOCK:
+        return _all(_conn().execute(
+            "SELECT * FROM pd_cards WHERE snoozed_until > 0 AND snoozed_until <= ?", (now,),
         ))
 
 

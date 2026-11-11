@@ -367,6 +367,28 @@ def sweep_timeouts() -> int:
             reason, outcome = f"Still firing {open_min} min after it started, nobody acknowledged.", "firing_timeout_paged"
         page(int(inc["id"]), reason=reason, outcome=outcome)
         n += 1
+    sweep_snoozes()
+    return n
+
+
+def sweep_snoozes() -> int:
+    """'Ignore for N min' windows that just ended: say so in the group and on the card, once.
+    PagerDuty itself re-alerts (and its unacknowledged event repaints the card red)."""
+    n = 0
+    for row in db.due_snoozed(time.time()):
+        pd_id = row["pd_incident_id"]
+        db.upsert_pd_card(pd_id, snoozed_until=0)
+        if row.get("state") == "resolved":
+            continue
+        title = row.get("title") or pd_id
+        try:
+            lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID,
+                                  f"⏰ Ignore time for \"{title}\" is over. It is still open, so PagerDuty alerts again now "
+                                  f"unless someone resolves it.")
+        except Exception as e:  # noqa: BLE001
+            log.warning("snooze-over message for %s failed: %s", pd_id, e)
+        _paint_pd_card(pd_id, row.get("state") or "snoozed", extra_line="⏰ Ignore time over, alerting again")
+        n += 1
     return n
 
 
@@ -788,7 +810,7 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         if action == "snooze":
             inc = pagerduty.snooze(incident_id, minutes)
             state = "snoozed"
-            row = db.get_pd_card(incident_id) or {}
+            row = db.upsert_pd_card(incident_id, snoozed_until=time.time() + minutes * 60)   # the sweeper announces the end
             if row.get("incident_id"):                          # our alert: mute its repeats for the same window
                 db.update_incident(int(row["incident_id"]), muted_until=time.time() + minutes * 60)
                 db.log_decision(int(row["incident_id"]), "reply", "ignore", f"{who} muted {minutes} min via the PagerDuty card")
