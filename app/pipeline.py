@@ -242,7 +242,8 @@ def _open_thread(incident_id: int, alert_message_id: str, alert: alert_parser.Al
     """Same group as the alerts: the alert message is the thread root. Different
     fixed group: post our own root message there."""
     header = f"[{alert.severity or '?'}] {alert.rule_name} · {alert.firing_count} instance(s) · {alert.alert_time or ''}"
-    if config.FIXED_GROUP_CHAT_ID == config.ALERT_CHAT_ID:
+    # a pushed alert without a Lark card id has nothing to reply under: post our own root message
+    if config.FIXED_GROUP_CHAT_ID == config.ALERT_CHAT_ID and alert_message_id.startswith("om_"):
         data = lark_client.reply_text(alert_message_id, f"👀 Incident #{incident_id} opened. {header}\nTriaging…", in_thread=True)
         db.update_incident(incident_id, thread_root_message_id=alert_message_id, thread_id=data.get("thread_id", ""))
     else:
@@ -385,6 +386,13 @@ def resolve_normal(incident_id: int, actor: str, text: str) -> None:
         _start_incident_ai_note(incident_id, "resolved", f"normal, said by {actor}: {text[:80]}")
 
 
+def _names(text: str, inc: Dict[str, Any], pol: Dict[str, Any]) -> str:
+    """Replace Lark open_ids in text with names the model can use: the check person's name, or 'a teammate'."""
+    cp = inc.get("check_person_open_id") or ""
+    cp_name = pol.get("check_person_name") or "the check person"
+    return re.sub(r"ou_[A-Za-z0-9]+", lambda m: cp_name if m.group(0) == cp else "a teammate", text or "")
+
+
 def _ai_note_for_incident(incident_id: int, stage: str, how: str) -> None:
     """Write one AI note for an incident without a PagerDuty card, from the incident's own facts and
     audit trail. Stored in incidents.ai_notes_json; 'resolved' is also outcome ai_summary. Painted
@@ -393,13 +401,16 @@ def _ai_note_for_incident(incident_id: int, stage: str, how: str) -> None:
         inc = db.get_incident(incident_id) or {}
         alert = json.loads(inc.get("alert_json") or "{}")
         started = float(inc.get("created_at") or time.time())
+        pol = json.loads(inc.get("policy_json") or "{}")
         timeline = [f"🟡 Triggered {time.strftime('%H:%M', time.localtime(started))}, check person tagged"]
         for d in db.decisions(incident_id):
-            if d.get("stage") != "ai_note":
-                timeline.append(f"{d.get('stage')}: {d.get('decision')} {(d.get('reasoning') or '')[:80]}")
-        timeline.append(f"{stage} {time.strftime('%H:%M')}: {how}")
+            # people's replies and the bot's verdicts only; internal plumbing (Lark/PagerDuty errors,
+            # earlier AI notes) is not part of the incident story
+            if d.get("stage") in ("reply", "policy", "ai"):
+                timeline.append(f"{d.get('stage')}: {d.get('decision')} {_names(d.get('reasoning') or '', inc, pol)[:80]}")
+        timeline.append(f"{stage} {time.strftime('%H:%M')}: {_names(how, inc, pol)}")
         ctx = {"title": f"[{inc.get('severity') or '?'}] {inc.get('rule_name')}", "service": "(not in PagerDuty)",
-               "urgency": inc.get("severity"), "assignees": inc.get("acked_by") or "",
+               "urgency": inc.get("severity"), "assignees": _names(inc.get("acked_by") or "", inc, pol),
                "timeline": timeline, "alert": alert, "past_cases": db.past_cases(inc.get("rule_name") or "")}
         text = ai_notes.note(stage, ctx)
         inc = db.get_incident(incident_id) or inc

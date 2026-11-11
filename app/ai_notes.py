@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from typing import Any, Dict, List
@@ -47,13 +48,18 @@ STAGES: Dict[str, str] = {
 }
 
 
+_RE_MENTION = re.compile(r"<at[^>]*>.*?</at>|ou_[A-Za-z0-9]+")
+
+
 def format_context(ctx: Dict[str, Any]) -> str:
     """Everything the model gets, as plain text. ctx keys: title, service, urgency, assignees,
     timeline (list of lines), alert (dict or None), past_cases (list)."""
+    # card history lines carry Lark mention markup (<at id=ou_…></at>); the model gets "a responder" instead
+    timeline = [_RE_MENTION.sub("a responder", str(t)) for t in (ctx.get("timeline") or [])]
     lines: List[str] = [
         f"PAGERDUTY INCIDENT\ntitle: {ctx.get('title')}\nservice: {ctx.get('service')}\n"
         f"urgency: {ctx.get('urgency')}\nassigned: {ctx.get('assignees') or '-'}",
-        "TIMELINE (Lark card)\n" + ("\n".join(ctx.get("timeline") or []) or "-"),
+        "TIMELINE (Lark card)\n" + ("\n".join(timeline) or "-"),
     ]
     alert = ctx.get("alert") or {}
     if alert:

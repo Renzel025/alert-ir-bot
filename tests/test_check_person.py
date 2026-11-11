@@ -361,7 +361,37 @@ def test_pushed_test_run_opens_and_a_green_push_resolves():
     green = dict(body, steps=[dict(s, ok=True) for s in body["steps"]], lark_message_id="om_run_card_2")
     assert pipeline.handle_alert_push(green)["result"] == "resolved"
     assert db.get_incident(out["incident_id"])["status"] == "resolved"
+    # no card id (the server-side curl test): the opener is a fresh root message, never a reply to a fake id
+    n_replies = len([c for c in LARK if c["op"] == "reply"])
+    out2 = pipeline.handle_alert_push(dict(body, provider="JILI", lark_message_id=""))
+    inc2 = db.get_incident(out2["incident_id"])
+    assert inc2["thread_root_message_id"].startswith("om_") and not inc2["thread_root_message_id"].startswith("om_run")
+    assert len([c for c in LARK if c["op"] == "reply"]) == n_replies
+    assert [d for d in db.decisions(out2["incident_id"]) if d["stage"] == "lark"] == []    # no Lark error logged
     POLICY.wait_minutes = 0
+
+
+def test_ai_timeline_has_names_not_ids_and_no_internal_errors():
+    config.AI_NOTES = True
+    config.PD_ON_ACKNOWLEDGE = False            # bot-card path, so the incident's own notes are written
+    AI_NOTES_MADE.clear()
+    CTX: List[Dict[str, Any]] = []
+    orig = ai_notes.note
+    ai_notes.note = lambda stage, ctx: (CTX.append(ctx) or orig(stage, ctx))
+    iid = alert("Names-check")
+    db.log_decision(iid, "lark", "error", "LarkError: reply_text: HTTP 400 code=99992354")   # internal plumbing
+    reply(iid, MATE, "ack")
+    _wait()
+    reply(iid, CP, "normal")
+    _wait()
+    ai_notes.note = orig
+    text = "\n".join(CTX[-1]["timeline"]) + " " + str(CTX[-1]["assignees"])
+    assert "ou_" not in text and "99992354" not in text
+    assert "Renzel" in text and "a teammate" in text
+    from app.ai_notes import format_context
+    assert "ou_" not in format_context(CTX[-1]) and "<at" not in format_context({"timeline": ["🟡 Acknowledged by <at id=ou_abc></at> 10:00"]})
+    config.AI_NOTES = False
+    config.PD_ON_ACKNOWLEDGE = True
 
 
 def test_reply_words():
