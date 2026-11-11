@@ -2,6 +2,7 @@
 
   POST /lark/events       Lark event subscription (im.message.receive_v1) — alerts and thread replies
   POST /pagerduty/status  Zoho Flow forwards every PagerDuty event here; the bot paints the one Lark card per incident
+  POST /alerts            the test automation pushes its run result (steps ok / failed) — auth via X-Alert-Secret
   GET  /health            liveness + last poll / sweep timestamps
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ async def lifespan(_: FastAPI):
     db.init()
     workers.start()
     log.info("alert-ir-bot up. dry_run=%s poll=%ss alert_chat=%s", config.DRY_RUN, config.LARK_POLL_INTERVAL_SEC, config.ALERT_CHAT_ID)
-    for name in ("LARK_VERIFICATION_TOKEN", "PD_STATUS_SECRET"):
+    for name in ("LARK_VERIFICATION_TOKEN", "PD_STATUS_SECRET", "ALERT_PUSH_SECRET"):
         if not getattr(config, name):
             log.warning("%s is empty: the matching endpoint accepts unauthenticated requests", name)
     yield
@@ -83,6 +84,18 @@ def _handle_and_log(msg: dict) -> None:
         return
     log.info("lark event: %s in chat %s from %s -> %s", msg.get("message_type") or "?", msg.get("chat_id") or "?",
              msg.get("sender_id") or "?", result)
+
+
+@app.post("/alerts")
+async def alerts(request: Request, x_alert_secret: str = Header(default="")):
+    """The test automation pushes its run result here (see pipeline.handle_alert_push) instead of the
+    bot reading the Lark card. Refused outright when no secret is configured: this route opens incidents."""
+    if not config.ALERT_PUSH_SECRET:
+        raise HTTPException(status_code=503, detail="ALERT_PUSH_SECRET not configured")
+    if not hmac.compare_digest(x_alert_secret, config.ALERT_PUSH_SECRET):
+        raise HTTPException(status_code=401, detail="bad secret")
+    body = await request.json()
+    return pipeline.handle_alert_push(body)
 
 
 @app.post("/pagerduty/status")

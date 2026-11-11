@@ -105,6 +105,48 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
     if alert is None:
         log.info("alert-bot message did not match template: %r", text[:120])
         return "unparsed"
+    return _handle_parsed_alert(msg, alert)
+
+
+def handle_alert_push(body: Dict[str, Any]) -> Dict[str, Any]:
+    """POST /alerts: the automation tells the bot its result directly instead of the bot reading the card.
+      {"source": "test-automation", "provider": "CQ9 3079", "game": "5 God beasts",
+       "steps": [{"step": "Enter Casino Plus", "ok": true, "note": ""}, ...],   # ok: true | false | "warn"
+       "summary": "...", "duration": "23s",
+       "lark_message_id": "om_...",      # the report card, so the thread opens under it (optional)
+       "chat_id": "oc_..."}              # defaults to ALERT_CHAT_ID
+    Any step with ok=false → firing (HIGH); only warnings → firing (WARNING); all ok → recovery."""
+    provider = str(body.get("provider") or "").strip()
+    if not provider:
+        return {"ok": False, "error": "provider is required"}
+    steps = [s for s in (body.get("steps") or []) if isinstance(s, dict) and s.get("step")]
+    failed = [s for s in steps if s.get("ok") is False]
+    warned = [s for s in steps if str(s.get("ok")).lower() == "warn"]
+    bad = failed or warned
+    status = "firing" if bad else "resolved"
+    severity = "HIGH" if failed else ("WARNING" if warned else "")
+    alert = alert_parser.Alert(
+        rule_name=f"{body.get('source') or 'test-automation'}: {provider}",
+        status=status, severity=severity, firing_count=max(1, len(bad)),
+        alert_value="; ".join(f"{s['step']} {'❌' if s.get('ok') is False else '⚠️'} {s.get('note') or ''}".strip() for s in bad)[:300]
+                    or str(body.get("summary") or "")[:300],
+        instances=[{"step": str(s["step"]), "result": "❌" if s.get("ok") is False else "⚠️", "note": str(s.get("note") or ""),
+                    "_raw": f"{s['step']}={'❌' if s.get('ok') is False else '⚠️'} {s.get('note') or ''}".strip()} for s in bad],
+        labels={k: str(v) for k, v in (("game", body.get("game")), ("duration", body.get("duration"))) if v},
+        raw_text=str(body.get("summary") or ""),
+        source=str(body.get("source") or "test-automation"),
+    )
+    mid = str(body.get("lark_message_id") or "") or f"push_{int(time.time() * 1000)}_{provider}"
+    if not db.mark_processed(mid):
+        return {"ok": True, "result": "duplicate", "rule": alert.rule_name}   # the poller already handled this card
+    msg = {"message_id": mid, "chat_id": str(body.get("chat_id") or config.ALERT_CHAT_ID), "sender_id": config.ALERT_BOT_SENDER_ID,
+           "message_type": "push", "content": json.dumps(body, ensure_ascii=False)}
+    result = _handle_parsed_alert(msg, alert)
+    inc = db.find_open_incident(alert.fingerprint) if status == "firing" else None
+    return {"ok": True, "result": result, "rule": alert.rule_name, "incident_id": int(inc["id"]) if inc else None}
+
+
+def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
     if alert.source not in config.ALERT_SOURCES:
         log.info("alert from source %r ignored (ALERT_SOURCES=%s): %s", alert.source, ",".join(sorted(config.ALERT_SOURCES)), alert.rule_name)
         return "ignored_source"

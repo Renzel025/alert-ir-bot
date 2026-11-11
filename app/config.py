@@ -42,6 +42,7 @@ LARK_POLL_INTERVAL_SEC = _int("LARK_POLL_INTERVAL_SEC", 0)  # 0 = events only; >
 PD_ROUTING_KEY = _env("PD_ROUTING_KEY")                    # Events API v2 integration key
 PD_EVENTS_URL = _env("PD_EVENTS_URL", "https://events.pagerduty.com/v2/enqueue")
 PD_STATUS_SECRET = _env("PD_STATUS_SECRET")                # Zoho Flow sends this in X-Status-Secret
+ALERT_PUSH_SECRET = _env("ALERT_PUSH_SECRET")              # test-automation sends this in X-Alert-Secret to POST /alerts
 POST_PD_STATUS_TO_THREAD = _env("POST_PD_STATUS_TO_THREAD", "0") == "1"  # 1 only if Zoho can't reply in thread
 PD_API_KEY = _env("PD_API_KEY")                            # REST token; only for the Lark card buttons
 PD_FROM_EMAIL = _env("PD_FROM_EMAIL")                      # PagerDuty needs a From header on writes

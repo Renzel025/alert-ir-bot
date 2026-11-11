@@ -345,6 +345,25 @@ def test_alert_sources_filter_ignores_threshold_cards():
     config.ALERT_SOURCES = {"threshold", "test-automation"}
 
 
+def test_pushed_test_run_opens_and_a_green_push_resolves():
+    body = {"source": "test-automation", "provider": "CQ9 3079", "game": "5 God beasts", "duration": "23s",
+            "steps": [{"step": "Enter Casino Plus", "ok": True}, {"step": "Enter provider game", "ok": True},
+                      {"step": "Place bet", "ok": False, "note": "PLAY never clicked"}],
+            "summary": "no bet was placed", "lark_message_id": "om_run_card_1"}
+    POLICY.wait_minutes = 5
+    out = pipeline.handle_alert_push(body)
+    assert out["ok"] and out["result"] == "waiting" and out["rule"] == "test-automation: CQ9 3079"
+    inc = db.get_incident(out["incident_id"])
+    assert inc["severity"] == "HIGH" and inc["thread_root_message_id"] == "om_run_card_1"   # thread under the run card
+    assert json.loads(inc["alert_json"])["alert_value"] == "Place bet ❌ PLAY never clicked"
+    assert [c for c in LARK if c["op"] == "reply"][-1]["to"] == "om_run_card_1"          # 👀 opened, under that card
+    assert pipeline.handle_alert_push(body)["result"] == "duplicate"                      # same card id twice
+    green = dict(body, steps=[dict(s, ok=True) for s in body["steps"]], lark_message_id="om_run_card_2")
+    assert pipeline.handle_alert_push(green)["result"] == "resolved"
+    assert db.get_incident(out["incident_id"])["status"] == "resolved"
+    POLICY.wait_minutes = 0
+
+
 def test_reply_words():
     c = pipeline.classify_reply
     assert c("normal") == "normal" and c("this is normal") == "normal" and c("ok fine") == "normal"
