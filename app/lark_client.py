@@ -144,6 +144,17 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     return reserve
 
 
+def delete_meeting(reserve_id: str) -> None:
+    """Cancel a reservation made by create_meeting (DELETE /vc/v1/reserves/{id}); the join link stops
+    working. Called when the incident resolves."""
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] delete_meeting %s", reserve_id)
+        return
+    r = requests.delete(f"{config.LARK_BASE}/vc/v1/reserves/{quote(reserve_id, safe='')}",
+                        headers=_headers(), timeout=config.HTTP_TIMEOUT)
+    _check(r, "delete_meeting")
+
+
 def list_messages(chat_id: str, page_size: int = 20) -> List[Dict[str, Any]]:
     """Newest messages in a chat (polling mode). Items use msg_type / body.content / sender.id."""
     params = {

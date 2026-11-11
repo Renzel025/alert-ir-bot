@@ -459,7 +459,21 @@ def _paint_pd_card(pd_id: str, state: str, by: str = "", fields: Optional[Dict[s
     # a new state gets an AI note, written in the background and painted onto the card when ready
     if changed and config.AI_NOTES and config.AI_BACKEND != "off" and state in ai_notes.STAGES:
         threading.Thread(target=_ai_annotate, args=(pd_id, state), daemon=True, name=f"ai-{pd_id}-{state}").start()
+    if changed and state == "resolved" and row.get("meeting_reserve_id"):
+        threading.Thread(target=_end_meeting, args=(pd_id,), daemon=True, name=f"paint-{pd_id}-meeting").start()
     return card
+
+
+def _end_meeting(pd_id: str) -> None:
+    """Incident resolved: cancel its Lark meeting reservation so the join link stops working."""
+    row = db.get_pd_card(pd_id) or {}
+    rid = row.get("meeting_reserve_id") or ""
+    try:
+        lark_client.delete_meeting(rid)
+        db.upsert_pd_card(pd_id, meeting_reserve_id="")
+        log.info("meeting reservation %s for %s cancelled", rid, pd_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not cancel meeting %s for %s: %s (expires on its own)", rid, pd_id, e)
 
 
 def handle_pd_status(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -595,7 +609,7 @@ def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
     if row.get("meeting_url"):                                  # someone else won the race
         _paint_pd_card(incident_id, state, message_id=clicked_message_id)
         return
-    db.upsert_pd_card(incident_id, meeting_url=reserve["url"])
+    db.upsert_pd_card(incident_id, meeting_url=reserve["url"], meeting_reserve_id=str(reserve.get("id") or "") or None)
     log.info("meeting for %s created by %s: %s", incident_id, who, reserve["url"])
     _paint_pd_card(incident_id, state, message_id=clicked_message_id, extra_line=f"📞 Meeting created by {by}")
     # Also a plain message under the card: Lark turns a meeting link in a message into the live meeting

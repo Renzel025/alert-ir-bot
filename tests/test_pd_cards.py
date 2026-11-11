@@ -49,7 +49,11 @@ MEETING_CALLS: List[Dict[str, Any]] = []
 
 def fake_create_meeting(topic, owner_open_id, hours=24):
     MEETING_CALLS.append({"topic": topic, "owner": owner_open_id, "hours": hours})
-    return {"url": f"https://vc.larksuite.com/j/{len(MEETING_CALLS)}", "meeting_no": "123456789"}
+    return {"id": f"rsv{len(MEETING_CALLS)}", "url": f"https://vc.larksuite.com/j/{len(MEETING_CALLS)}", "meeting_no": "123456789"}
+
+
+MEETING_DELETED: List[str] = []
+lark_client.delete_meeting = lambda reserve_id: MEETING_DELETED.append(reserve_id)
 
 
 def fake_reply_text(message_id, text, in_thread=True):
@@ -216,6 +220,9 @@ def test_resolve_from_pagerduty_app_strips_buttons():
     assert _buttons(card) == ["Open in PagerDuty"]
     assert "🟢 Resolved by Renzel Hernandez" in _history(card)
     assert db.get_pd_card("Q1")["state"] == "resolved"
+    # the meeting link is dropped from the resolved card and the reservation is cancelled in Lark
+    assert "Join the incident call" not in card["elements"][0]["text"]["content"]
+    assert MEETING_DELETED == ["rsv1"] and db.get_pd_card("Q1")["meeting_reserve_id"] == ""
 
 
 def test_stale_trigger_after_resolve_is_ignored():

@@ -8,7 +8,7 @@
     resolved       green    Open in PagerDuty
 
 "Create meeting" shows only while no meeting exists; once one does, the card shows its join link
-instead (in every later state, including resolved). Button values round-trip through Lark's
+instead until resolved (the bot cancels the reservation then, so the link is dropped). Button values round-trip through Lark's
 card.action.trigger callback to pipeline.handle_card_action:
 {"action": "acknowledged" | "resolved" | "snooze" | "meeting", "incident_id": "Q..."}; the Ignore
 dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
@@ -54,7 +54,7 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
     facts = [f"**Urgency:** {urgency or '?'} · **Service:** {service or '?'}"]
     if assignees:
         facts.append(f"**Assigned:** {assignees}")
-    if meeting_url:
+    if meeting_url and state != "resolved":        # resolved: the reservation is cancelled, no dead link
         facts.append(f"📞 **Meeting:** [Join the incident call]({meeting_url})")
     actions: List[Dict[str, Any]] = []
     for b in style["buttons"]:

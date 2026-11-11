@@ -85,6 +85,7 @@ _MIGRATIONS = [
     ("pd_cards", "incident_id", "INTEGER"),
     ("pd_cards", "ai_notes_json", "TEXT"),
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
+    ("pd_cards", "meeting_reserve_id", "TEXT"),  # to cancel the reservation when the incident resolves
 ]
 
 
