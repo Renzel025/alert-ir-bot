@@ -56,15 +56,15 @@ MEETING_DELETED: List[str] = []
 lark_client.delete_meeting = lambda reserve_id: MEETING_DELETED.append(reserve_id)
 
 
-def fake_reply_text(message_id, text, in_thread=True):
-    LARK_CALLS.append({"op": "reply", "id": message_id, "text": text, "in_thread": in_thread})
+def fake_post_rich(chat_id, title, lines):
+    LARK_CALLS.append({"op": "post_rich", "chat": chat_id, "title": title, "lines": lines})
     return {"message_id": f"om_{next(_ids)}"}
 
 
 lark_client.post_card = fake_post_card
 lark_client.update_card = fake_update_card
 lark_client.create_meeting = fake_create_meeting
-lark_client.reply_text = fake_reply_text
+lark_client.post_rich = fake_post_rich
 pagerduty.set_status = lambda incident_id, status: dict(PD_INC, status=status)
 pagerduty.snooze = lambda incident_id, minutes: dict(PD_INC, status="acknowledged")
 pagerduty.get_incident = lambda incident_id: dict(PD_INC, id=incident_id)   # every test id "exists"
@@ -191,13 +191,13 @@ def test_meeting_click_creates_one_meeting_and_shows_the_link():
     assert "📞 Meeting created by <at id=ou_me></at>" in _history(card)
     assert db.get_pd_card("Q1")["meeting_url"] == "https://vc.larksuite.com/j/1"
     assert AI_CALLS[-1] == "acknowledged"                               # a meeting is not a state: no AI note
-    msg = _last("reply")                                                # plain message under the card → Lark meeting widget
-    assert msg["id"] == "om_100" and msg["in_thread"] is False
-    assert msg["text"] == "🚨 Incident meeting created for: card test\njoin in meeting link\nhttps://vc.larksuite.com/j/1"
-    n_reply = len([c for c in LARK_CALLS if c["op"] == "reply"])
+    msg = _last("post_rich")                                            # rich message in the group → Lark meeting widget
+    assert msg["chat"] == "oc_test" and msg["title"] == "card test"
+    assert msg["lines"][-1] == [{"tag": "a", "text": "Video meeting—card test", "href": "https://vc.larksuite.com/j/1"}]
+    n_msgs = len([c for c in LARK_CALLS if c["op"] == "post_rich"])
     click("meeting", who="ou_other")                                    # second click, other person
     assert len(MEETING_CALLS) == 1                                      # same meeting, no new reservation
-    assert len([c for c in LARK_CALLS if c["op"] == "reply"]) == n_reply   # and no second message
+    assert len([c for c in LARK_CALLS if c["op"] == "post_rich"]) == n_msgs   # and no second message
     assert "https://vc.larksuite.com/j/1" in _last("update")["card"]["elements"][0]["text"]["content"]
 
 

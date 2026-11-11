@@ -612,15 +612,17 @@ def _do_meeting(incident_id: str, who: str, clicked_message_id: str) -> None:
     db.upsert_pd_card(incident_id, meeting_url=reserve["url"], meeting_reserve_id=str(reserve.get("id") or "") or None)
     log.info("meeting for %s created by %s: %s", incident_id, who, reserve["url"])
     _paint_pd_card(incident_id, state, message_id=clicked_message_id, extra_line=f"📞 Meeting created by {by}")
-    # Also a plain message under the card: Lark turns a meeting link in a message into the live meeting
-    # widget (meeting id, who is in, Ended), which a card cannot show. Same pattern as the P0 bot.
-    text = f"🚨 Incident meeting created for: {row.get('title') or incident_id}\njoin in meeting link\n{reserve['url']}"
+    # Also a message in the group: Lark attaches the live meeting widget (meeting id, who is in, Ended)
+    # to a meeting link in a top-level rich-text message, which a card cannot show. Same form as the P0 bot:
+    # title line, then the link rendered with the meeting's name.
+    title = row.get("title") or incident_id
     try:
-        card_msg = clicked_message_id or row.get("lark_message_id") or ""
-        if card_msg:
-            lark_client.reply_text(card_msg, text, in_thread=False)
-        else:
-            lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, text)
+        lark_client.post_rich(
+            row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, title,
+            [[{"tag": "text", "text": "🚨 Incident meeting created."}],
+             [{"tag": "text", "text": "join in meeting link"}],
+             [{"tag": "a", "text": f"Video meeting—{title}", "href": reserve["url"]}]],
+        )
     except Exception as e:  # noqa: BLE001
         log.warning("meeting message for %s failed: %s (link is on the card)", incident_id, e)
     if row.get("incident_id"):

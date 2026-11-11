@@ -105,6 +105,21 @@ def post_text(chat_id: str, text: str) -> Dict[str, Any]:
     return _check(r, "post_text")
 
 
+def post_rich(chat_id: str, title: str, lines: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """New top-level rich-text ("post") message. `lines` = Lark post paragraphs, each a list of
+    elements like {"tag": "text", "text": "..."} or {"tag": "a", "text": "...", "href": "..."}."""
+    content = {"en_us": {"title": title, "content": lines}}
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] post_rich chat=%s title=%r", chat_id, title)
+        return {"message_id": f"om_dry_{next(_dry_ids)}"}
+    payload = {"receive_id": chat_id, "msg_type": "post", "content": json.dumps(content, ensure_ascii=False)}
+    r = requests.post(
+        f"{config.LARK_BASE}/im/v1/messages?receive_id_type=chat_id",
+        headers=_headers(), json=payload, timeout=config.HTTP_TIMEOUT,
+    )
+    return _check(r, "post_rich")
+
+
 def reply_text(message_id: str, text: str, in_thread: bool = True) -> Dict[str, Any]:
     """Reply under a message. in_thread=True opens/uses the topic thread on it."""
     if config.DRY_RUN:
