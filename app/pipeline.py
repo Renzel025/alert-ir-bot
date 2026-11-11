@@ -226,12 +226,13 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
         clock = f"No acknowledgement within {pol.wait_minutes} min = I page on-call at {at}."
     else:
         clock = f"If this is still firing {pol.firing_minutes} min after it started, I page on-call at {at}."
+    what = alert.alert_value or f"{alert.firing_count} instance(s)"
     prompt_id = _reply(
         iid,
-        f"🟡 {alert.rule_name} ({alert.severity or '?'}): AI says this can wait (confidence {result.confidence}): {result.reasoning}\n"
+        f"🟡 {alert.rule_name} ({alert.severity or '?'}): {what}\n"
         f"{lark_client.mention(pol.check_person, pol.check_person_name)} please check and reply to this message: "
         f"'normal' if it is fine, or 'acknowledge' if you are looking into it. {clock}",
-        in_thread=False,     # in the group chat, where everyone sees it
+        in_thread=False,     # in the group chat, where everyone sees it; the triage verdict itself is in `decisions`
     )
     if prompt_id:
         db.update_incident(iid, prompt_message_id=prompt_id)   # replies to this message count as answers too
