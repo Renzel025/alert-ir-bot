@@ -671,14 +671,20 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
 # --- helpers ----------------------------------------------------------------------------
 
 def _reply(incident_id: int, text: str, in_thread: bool = True) -> None:
-    """Reply under the incident's root message: inside its thread (default), or as a quoted reply
-    visible in the group itself (in_thread=False). A Lark failure must never stop the pipeline."""
-    inc = db.get_incident(incident_id)
-    root = (inc or {}).get("thread_root_message_id") or ""
-    if not root:
-        log.warning("incident %s has no thread root; wanted to say: %s", incident_id, text)
-        return
+    """in_thread=True: reply inside the incident's topic thread. in_thread=False: a new top-level
+    message in the group chat, so everyone sees it without opening the thread (Lark keeps any reply
+    to a topic root inside the topic, even with reply_in_thread=false, verified 2026-11-11).
+    A Lark failure must never stop the pipeline."""
+    inc = db.get_incident(incident_id) or {}
     try:
-        lark_client.reply_text(root, text, in_thread=in_thread)
+        if in_thread:
+            root = inc.get("thread_root_message_id") or ""
+            if not root:
+                log.warning("incident %s has no thread root; wanted to say: %s", incident_id, text)
+                return
+            lark_client.reply_text(root, text, in_thread=True)
+        else:
+            chat = inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID or config.ALERT_CHAT_ID
+            lark_client.post_text(chat, text)
     except Exception as e:  # noqa: BLE001
         log.warning("Lark reply failed for incident %s: %s", incident_id, e)
