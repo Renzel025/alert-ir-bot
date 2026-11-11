@@ -208,6 +208,24 @@ def test_page_now_button_pages_for_anyone():
     assert click(iid, "bot_page", MATE)["toast"]["content"] == "This incident is already closed or paged."
 
 
+def test_ignore_on_the_pagerduty_card_mutes_repeats_of_the_alert():
+    iid = db.find_open_incident("cashier-errors")["id"]                      # paged above
+    db.upsert_pd_card("Q9", incident_id=iid, state="triggered", lark_message_id="om_pd", chat_id="oc_test")
+    pagerduty.snooze = lambda incident_id, minutes: {"id": incident_id, "status": "acknowledged", "title": "x"}
+    pipeline._do_card_action("snooze", "Q9", MATE, 30, "om_pd")
+    inc = db.get_incident(iid)
+    assert abs(inc["muted_until"] - (time.time() + 30 * 60)) < 2
+    n = len(LARK)
+    text = "[FIRING:2] Cashier-errors\nSeverity: WARNING\nalert time: 2026-11-11 12:10:00\nalert value: x"
+    out = pipeline.handle_message({"message_id": "om_alert_repeat", "chat_id": "oc_test", "sender_id": "cli_alertbot",
+                                   "message_type": "text", "content": json.dumps({"text": text})})
+    assert out == "muted" and len([c for c in LARK[n:] if c["op"] == "reply"]) == 0   # no "Still firing"
+    db.update_incident(iid, muted_until=time.time() - 1)                      # window over
+    out = pipeline.handle_message({"message_id": "om_alert_repeat2", "chat_id": "oc_test", "sender_id": "cli_alertbot",
+                                   "message_type": "text", "content": json.dumps({"text": text})})
+    assert out == "repeat" and "Still firing" in _last("reply")["text"]
+
+
 def test_reply_words():
     c = pipeline.classify_reply
     assert c("normal") == "normal" and c("this is normal") == "normal" and c("ok fine") == "normal"

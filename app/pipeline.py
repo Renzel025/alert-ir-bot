@@ -119,6 +119,12 @@ def _handle_alert(msg: Dict[str, Any], text: str) -> str:
 
     if existing:
         db.update_incident(existing["id"], alert_json=json.dumps(alert.to_dict(), ensure_ascii=False))
+        if float(existing.get("muted_until") or 0) > time.time():
+            # "Ignore for N min" was pressed on the PagerDuty card: PagerDuty is snoozed and the thread
+            # stays quiet too; the repeat is still recorded above
+            log.info("incident %s repeat muted until %s", existing["id"],
+                     time.strftime("%H:%M", time.localtime(float(existing["muted_until"]))))
+            return "muted"
         _reply(existing["id"], f"🔁 Still firing: {alert.firing_count} instance(s), alert time {alert.alert_time or '?'}.")
         return "repeat"
 
@@ -782,6 +788,10 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         if action == "snooze":
             inc = pagerduty.snooze(incident_id, minutes)
             state = "snoozed"
+            row = db.get_pd_card(incident_id) or {}
+            if row.get("incident_id"):                          # our alert: mute its repeats for the same window
+                db.update_incident(int(row["incident_id"]), muted_until=time.time() + minutes * 60)
+                db.log_decision(int(row["incident_id"]), "reply", "ignore", f"{who} muted {minutes} min via the PagerDuty card")
         else:
             inc = pagerduty.set_status(incident_id, action)
             state = action
