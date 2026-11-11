@@ -356,7 +356,7 @@ def test_pushed_test_run_opens_and_a_green_push_resolves():
     inc = db.get_incident(out["incident_id"])
     assert inc["severity"] == "HIGH" and inc["thread_root_message_id"] == "om_run_card_1"   # thread under the run card
     assert json.loads(inc["alert_json"])["alert_value"] == "Place bet ❌ PLAY never clicked"
-    assert [c for c in LARK if c["op"] == "reply"][-1]["to"] == "om_run_card_1"          # 👀 opened, under that card
+    assert not any(c["op"] == "reply" and "Incident #" in c["text"] for c in LARK)        # no 👀 opener any more
     assert pipeline.handle_alert_push(body)["result"] == "duplicate"                      # same card id twice
     green = dict(body, steps=[dict(s, ok=True) for s in body["steps"]], lark_message_id="om_run_card_2")
     assert pipeline.handle_alert_push(green)["result"] == "resolved"
@@ -365,7 +365,7 @@ def test_pushed_test_run_opens_and_a_green_push_resolves():
     n_replies = len([c for c in LARK if c["op"] == "reply"])
     out2 = pipeline.handle_alert_push(dict(body, provider="JILI", lark_message_id=""))
     inc2 = db.get_incident(out2["incident_id"])
-    assert inc2["thread_root_message_id"].startswith("om_") and not inc2["thread_root_message_id"].startswith("om_run")
+    assert inc2["thread_root_message_id"] == inc2["prompt_message_id"]                   # the 🟡 prompt is the root
     assert len([c for c in LARK if c["op"] == "reply"]) == n_replies
     assert [d for d in db.decisions(out2["incident_id"]) if d["stage"] == "lark"] == []    # no Lark error logged
     POLICY.wait_minutes = 0

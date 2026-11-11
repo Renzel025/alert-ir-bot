@@ -226,7 +226,7 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
         clock = f"No acknowledgement within {pol.wait_minutes} min = I page on-call at {at}."
     else:
         clock = f"If this is still firing {pol.firing_minutes} min after it started, I page on-call at {at}."
-    what = alert.alert_value or f"{alert.firing_count} instance(s)"
+    what = _one_line(alert.alert_value) or f"{alert.firing_count} instance(s)"
     prompt_id = _reply(
         iid,
         f"🟡 {alert.rule_name} ({alert.severity or '?'}): {what}\n"
@@ -236,20 +236,23 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
     )
     if prompt_id:
         db.update_incident(iid, prompt_message_id=prompt_id)   # replies to this message count as answers too
+        if not (db.get_incident(iid) or {}).get("thread_root_message_id"):
+            db.update_incident(iid, thread_root_message_id=prompt_id)   # no card to thread under: the prompt is the root
     return "waiting"
 
 
 def _open_thread(incident_id: int, alert_message_id: str, alert: alert_parser.Alert) -> None:
-    """Same group as the alerts: the alert message is the thread root. Different
-    fixed group: post our own root message there."""
-    header = f"[{alert.severity or '?'}] {alert.rule_name} · {alert.firing_count} instance(s) · {alert.alert_time or ''}"
-    # a pushed alert without a Lark card id has nothing to reply under: post our own root message
+    """No opener message any more (Renzel 2026-11-11: the run card + the 🟡 prompt are enough). The
+    alert card itself is the thread root for repeats; a pushed alert without a card id gets the 🟡
+    prompt as its root once that is posted (see the waiting branch)."""
     if config.FIXED_GROUP_CHAT_ID == config.ALERT_CHAT_ID and alert_message_id.startswith("om_"):
-        data = lark_client.reply_text(alert_message_id, f"👀 Incident #{incident_id} opened. {header}\nTriaging…", in_thread=True)
-        db.update_incident(incident_id, thread_root_message_id=alert_message_id, thread_id=data.get("thread_id", ""))
-    else:
-        data = lark_client.post_text(config.FIXED_GROUP_CHAT_ID, f"👀 Incident #{incident_id}: {header}\n{alert.alert_value}")
-        db.update_incident(incident_id, thread_root_message_id=data.get("message_id", ""), thread_id=data.get("thread_id", ""))
+        db.update_incident(incident_id, thread_root_message_id=alert_message_id)
+
+
+def _one_line(text: str, limit: int = 160) -> str:
+    """First line of a value, trimmed: group messages carry the headline, the card carries the detail."""
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return first if len(first) <= limit else first[:limit - 1] + "…"
 
 
 # --- the check-person path -------------------------------------------------------------
