@@ -24,6 +24,8 @@ severity_overrides:
 
 # First match wins. `match` is a case-insensitive regex on the rule name.
 rules:
+  - match: "^test-automation:"     # a failed Web/PC test run (one rule per provider); HIGH → 5 min to acknowledge (severity_overrides)
+    firing_minutes: 20
   - match: "payment|deposit|withdraw|login"
     always_page: true
   - match: "provider.*drop"

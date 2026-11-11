@@ -11,8 +11,23 @@ same app; it is parsed as an alert for now. Add MonitorFlow's title/rows here on
     row 4:  🙋 Report wrong alert click👆
 
 Other automations post through the same app into the same group ("⚠️ Anomaly detected - …" from lark-alert-listener,
-"Web/PC automatic testing for provider: …", the bot's own PagerDuty cards from Zoho). Those must parse to None.
+the bot's own PagerDuty cards from Zoho). Those must parse to None.
 The recovery card has NOT been seen yet; `_CARD_RESOLVED` is a guess until MonitorFlow shows one.
+
+Test-automation run reports (2026-11-11, Renzel: "trigger only if the automation in test automation failed").
+Posted by ~/Desktop/test-automation (run_recording.build_report_card) through the same app:
+
+    title:     Web/PC automatic testing for provider: CQ9 3079 (5 God beasts)      (or "Provider probe: FC (3205)")
+    markdown:  Duration: 1m 25s
+               Enter Casino Plus ✅
+               Enter provider game ❌
+               Place bet ❌            (or "⚠️ (tap sent, not confirmed)")
+               Bet history ⏳ checking the site's Bet Record…   (early card; finished in place later)
+    header:    red on any ❌, orange on any ⚠️, green otherwise
+
+A run with ❌ is a firing alert (rule "test-automation: <provider>", severity HIGH; ⚠️-only = WARNING), a green
+run for the same provider is its recovery. The early card is posted once and then edited in place, so a ❌ that
+appears only in the final edit (Bet history) is not seen by the poller.
 
 `parse()` still accepts the plain-text template (`[FIRING:n] rule_name` …) used by scripts/simulate.sh.
 """
@@ -30,6 +45,9 @@ _SEVERITIES = r"CRITICAL|HIGH|WARNING|WARN|MEDIUM|LOW|INFO|P[0-4]"
 _CARD_TITLE = re.compile(r"^\W*(?P<sev>" + _SEVERITIES + r")\s*[-–—:]\s*(?P<rule>.+?)\s*$", re.I)
 _CARD_RESOLVED = re.compile(r"^\W*(?P<status>RESOLVED|RECOVERED|RECOVERY)\s*[-–—:]\s*(?P<rule>.+?)\s*$", re.I)
 _CHANNEL_TEST = "monitorflow channel test"
+_TEST_RUN_TITLE = re.compile(r"^(?:[\w/ ]*automatic testing for provider|provider probe)\s*:\s*(?P<target>.+?)\s*$", re.I)
+_TEST_RUN_PROVIDER = re.compile(r"^(?P<provider>[^(]+?)\s*(?:\((?P<game>[^)]*)\))?\s*$")
+_TEST_RUN_STEP = re.compile(r"^(?P<step>[A-Za-z][\w /]{1,40}?)\s*(?P<mark>✅|❌|⚠️|⏳)\s*(?P<note>.*)$")
 _KEY_TOKEN = re.compile(r"^[A-Za-z][\w /]{0,30}:$")                 # "Severity:"  "ENV:"
 _INLINE_KV = re.compile(r"^([A-Za-z][\w /]{0,30}):\s*(.+)$")        # "Severity: CRITICAL" in one run
 _NUMERIC = re.compile(r"^-?\d[\d.,%]*$")
@@ -108,9 +126,9 @@ def _row_tokens(row: Any) -> List[str]:
     out: List[str] = []
     elements = row if isinstance(row, list) else [row]
     for el in elements:
-        if not isinstance(el, dict) or el.get("tag") not in ("text", "lark_md", "plain_text", "div"):
+        if not isinstance(el, dict) or el.get("tag") not in ("text", "lark_md", "plain_text", "div", "markdown"):
             continue
-        txt = el.get("text")
+        txt = el.get("text") if el.get("tag") != "markdown" else el.get("content")
         if isinstance(txt, dict):
             txt = txt.get("content")
         if not isinstance(txt, str):
@@ -153,6 +171,9 @@ def parse_card(content: str) -> Optional[Alert]:
         return None
     if title.lower() == _CHANNEL_TEST:
         return Alert(rule_name=title, raw_text=title)
+    tm = _TEST_RUN_TITLE.match(title)
+    if tm:
+        return _parse_test_run(tm.group("target"), data, content)
 
     m = _CARD_TITLE.match(title)
     status = "firing"
@@ -200,6 +221,45 @@ def parse_card(content: str) -> Optional[Alert]:
         raw_text=extract_text("interactive", content),
     )
     return alert
+
+
+def _parse_test_run(target: str, data: Dict[str, Any], content: str) -> Optional[Alert]:
+    """A test-automation run report → firing alert (any ❌), warning (⚠️ only) or recovery (all ✅)."""
+    pm = _TEST_RUN_PROVIDER.match(target) or None
+    provider = (pm.group("provider") if pm else target).strip()
+    game = (pm.group("game") if pm else "") or ""
+    steps: List[Dict[str, str]] = []
+    duration = ""
+    for row in data.get("elements") or []:
+        for tok in _row_tokens(row):
+            if tok.lower().startswith("duration:"):
+                duration = tok.split(":", 1)[1].strip()
+                continue
+            sm = _TEST_RUN_STEP.match(tok)
+            if sm:
+                steps.append({"step": sm.group("step").strip(), "mark": sm.group("mark"), "note": sm.group("note").strip()})
+    if not steps:
+        return None                                        # not a report we understand (no checklist)
+    failed = [s for s in steps if s["mark"] == "❌"]
+    warned = [s for s in steps if s["mark"] == "⚠️"]
+    if failed:
+        status, severity = "firing", "HIGH"
+    elif warned:
+        status, severity = "firing", "WARNING"
+    else:
+        status, severity = "resolved", ""                  # a green run = the recovery for that provider
+    bad = failed or warned
+    return Alert(
+        rule_name=f"test-automation: {provider}",
+        status=status,
+        severity=severity,
+        firing_count=max(1, len(bad)),
+        alert_value="; ".join(f"{s['step']} {s['mark']} {s['note']}".strip() for s in bad)[:300],
+        instances=[{"step": s["step"], "result": s["mark"], "note": s["note"], "_raw": f"{s['step']}={s['mark']} {s['note']}".strip()}
+                   for s in bad],
+        labels={k: v for k, v in (("game", game), ("duration", duration)) if v},
+        raw_text=extract_text("interactive", content),
+    )
 
 
 # --- plain-text template (simulate.sh, or if MonitorFlow ever posts text) -----------------

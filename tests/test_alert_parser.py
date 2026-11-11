@@ -85,8 +85,59 @@ def test_channel_test_is_a_test():
 
 
 def test_other_cards_are_rejected():
-    for c in (ANOMALY_FOLLOWUP, WEBPC_FOLLOWUP, ZOHO_PD_CARD, ZOHO_WITH_ALERT_LIKE_TITLE):
+    for c in (ANOMALY_FOLLOWUP, ZOHO_PD_CARD, ZOHO_WITH_ALERT_LIKE_TITLE):
         assert ap.parse_card(c) is None, c[:60]
+
+
+# --- test-automation run reports (format from ~/Desktop/test-automation/run_recording.build_report_card) ---
+
+def run_card(title: str, checklist: str, colour: str = "green") -> str:
+    return json.dumps({
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {"template": colour, "title": {"tag": "plain_text", "content": title}},
+        "elements": [{"tag": "markdown", "content": checklist}, {"tag": "hr"},
+                     {"tag": "markdown", "content": "Opened 5 God beasts: no bet placed (game did not load)."}],
+    }, ensure_ascii=False)
+
+
+RUN_FAILED = run_card("Web/PC automatic testing for provider: CQ9 3079 (5 God beasts)",
+                      "Duration: 1m 25s\nEnter Casino Plus ✅\nEnter provider game ❌\nPlace bet ❌\nBet history ⏳ checking the site's Bet Record…", "red")
+RUN_WARNED = run_card("Web/PC automatic testing for provider: JILI (Super Ace)",
+                      "Duration: 2m 03s\nEnter Casino Plus ✅\nEnter provider game ✅\nPlace bet ⚠️ (tap sent, not confirmed)", "orange")
+RUN_GREEN = run_card("Web/PC automatic testing for provider: CQ9 3079 (5 God beasts)",
+                     "Duration: 1m 10s\nEnter Casino Plus ✅\nEnter provider game ✅\nPlace bet ✅\nBet history ✅ 5 God beasts · bet 10 · 12:01")
+RUN_PROBE_FAILED = run_card("Provider probe: FC (3205)", "Duration: 0m 40s\nEnter Casino Plus ❌\nEnter provider game ❌\nPlace bet ❌", "red")
+
+
+def test_failed_test_run_is_a_high_alert_per_provider():
+    a = ap.parse_card(RUN_FAILED)
+    assert a is not None and a.status == "firing" and a.severity == "HIGH"
+    assert a.rule_name == "test-automation: CQ9 3079" and a.fingerprint == "test-automation:_cq9_3079"
+    assert a.firing_count == 2 and [i["step"] for i in a.instances] == ["Enter provider game", "Place bet"]
+    assert a.alert_value == "Enter provider game ❌; Place bet ❌"
+    assert a.labels == {"game": "5 God beasts", "duration": "1m 25s"} and not a.is_test
+
+
+def test_warned_test_run_is_a_warning():
+    a = ap.parse_card(RUN_WARNED)
+    assert a is not None and a.status == "firing" and a.severity == "WARNING"
+    assert a.rule_name == "test-automation: JILI" and a.alert_value == "Place bet ⚠️ (tap sent, not confirmed)"
+
+
+def test_green_test_run_is_the_recovery_for_the_same_provider():
+    a = ap.parse_card(RUN_GREEN)
+    assert a is not None and a.status == "resolved" and a.instances == []
+    assert a.fingerprint == ap.parse_card(RUN_FAILED).fingerprint         # same incident key → resolves it
+
+
+def test_provider_probe_title_also_parses():
+    a = ap.parse_card(RUN_PROBE_FAILED)
+    assert a is not None and a.rule_name == "test-automation: FC" and a.firing_count == 3
+
+
+def test_old_success_sample_still_parses_as_recovery():
+    a = ap.parse_card(WEBPC_FOLLOWUP)
+    assert a is not None and a.status == "resolved" and a.rule_name == "test-automation: CQ9 3079"
 
 
 def test_text_template_still_works():            # scripts/simulate.sh path
