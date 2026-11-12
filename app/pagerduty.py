@@ -122,6 +122,49 @@ def set_status(incident_id: str, status: str) -> Dict[str, Any]:
         raise PagerDutyError(f"set_status: HTTP {r.status_code} {r.text[:300]}")
     return r.json()["incident"]
 
+_user_id_cache: Dict[str, str] = {}
+
+
+def _rest_headers() -> Dict[str, str]:
+    return {"Authorization": f"Token token={config.PD_API_KEY}", "Accept": "application/vnd.pagerduty+json;version=2",
+            "Content-Type": "application/json", "From": config.PD_FROM_EMAIL}
+
+
+def user_id_for_email(email: str) -> str:
+    """PagerDuty user id (P…) for an email, cached. Needed as requester_id for responder requests."""
+    if email in _user_id_cache:
+        return _user_id_cache[email]
+    r = requests.get("https://api.pagerduty.com/users", headers=_rest_headers(), params={"query": email, "limit": 5},
+                     timeout=config.HTTP_TIMEOUT)
+    if r.status_code != 200:
+        raise PagerDutyError(f"users?query: HTTP {r.status_code} {r.text[:300]}")
+    for u in r.json().get("users") or []:
+        if str(u.get("email", "")).lower() == email.lower():
+            _user_id_cache[email] = str(u["id"])
+            return _user_id_cache[email]
+    raise PagerDutyError(f"no PagerDuty user with email {email}")
+
+
+def request_responder(incident_id: str, user_id: str, message: str) -> Dict[str, Any]:
+    """"Call on duty": POST /incidents/{id}/responder_requests. PagerDuty notifies that user through
+    their own notification rules (phone call, SMS, push), the incident stays as it is."""
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] pagerduty responder request %s -> user %s: %s", incident_id, user_id, message)
+        return {"incident_id": incident_id, "user_id": user_id}
+    if not config.PD_API_KEY or not config.PD_FROM_EMAIL:
+        raise PagerDutyError("PD_API_KEY / PD_FROM_EMAIL not set")
+    body = {
+        "requester_id": user_id_for_email(config.PD_FROM_EMAIL),
+        "message": message[:200],
+        "responder_request_targets": [{"responder_request_target": {"id": user_id, "type": "user_reference"}}],
+    }
+    r = requests.post(f"https://api.pagerduty.com/incidents/{incident_id}/responder_requests",
+                      headers=_rest_headers(), json=body, timeout=config.HTTP_TIMEOUT)
+    if r.status_code not in (200, 201):
+        raise PagerDutyError(f"responder_request: HTTP {r.status_code} {r.text[:300]}")
+    return r.json().get("responder_request") or {}
+
+
 def escalate(incident_id: str, level: int) -> Dict[str, Any]:
     """Move the incident to escalation level N of its policy (REST PUT with escalation_level):
     PagerDuty notifies that level and the incident goes back to triggered."""

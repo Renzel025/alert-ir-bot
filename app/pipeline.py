@@ -908,7 +908,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     if action == "call_duty":
         threading.Thread(target=_call_duty_pd, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
-        return {"toast": {"type": "info", "content": "Calling the duty person's phone via Lark…"}}
+        return {"toast": {"type": "info", "content": "Asking PagerDuty to call the duty account…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
@@ -933,7 +933,7 @@ def _handle_incident_card_action(action: str, incident_id: str, who: str) -> Dic
     threading.Thread(target=_do_incident_action, args=(action, iid, who), daemon=True, name=f"act-inc-{iid}").start()
     return {"toast": {"type": "info", "content": {"bot_resolve": "Resolving as normal…", "bot_page": "Paging on-call…",
                                                    "meeting": "Creating the incident meeting…",
-                                                   "call_cp": "Calling the check person's phone via Lark…"}[action]}}
+                                                   "call_cp": "Paging on-call now via PagerDuty…"}[action]}}
 
 
 def _do_incident_action(action: str, incident_id: int, who: str) -> None:
@@ -948,54 +948,34 @@ def _do_incident_action(action: str, incident_id: int, who: str) -> None:
 
 
 def _call_check_person(incident_id: int, who: str) -> None:
-    """"📞 Call check person" on the 🟡 prompt: ring the check person's phone through Lark's urgent call
-    (no meeting). The bot posts a one-line message in the group and escalates it by phone to them."""
-    inc = db.get_incident(incident_id) or {}
-    cp = inc.get("check_person_open_id") or ""
-    pol = json.loads(inc.get("policy_json") or "{}")
-    cp_text = lark_client.mention(cp, pol.get("check_person_name") or "")
-    chat = inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID
-    db.log_decision(incident_id, "reply", "call_cp", f"{who} pressed Call check person")
-    if _phone_call(chat, cp, cp_text, who, f"{inc.get('rule_name') or 'Alert'}: {_one_line(json.loads(inc.get('alert_json') or '{}').get('alert_value') or '')}"):
-        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} by Lark urgent phone call")
-
-
-def _phone_call(chat_id: str, cp: str, cp_text: str, who: str, about: str) -> bool:
-    """Lark urgent phone call: post a short message in the group, then PATCH …/urgent_phone on it for `cp`,
-    which rings their phone with Lark's voice notice. Uses the tenant's urgent-call quota. True when it rang."""
-    try:
-        data = lark_client.post_text(chat_id, f"📞 {_mention_text(who)} is calling {cp_text} about {about}".strip())
-        mid = str(data.get("message_id") or "")
-        invalid = lark_client.urgent_phone(mid, [cp]) if mid else [cp]
-    except Exception as e:  # noqa: BLE001
-        log.warning("urgent phone call to %s failed: %s", cp, e)
-        try:
-            lark_client.post_text(chat_id, f"📞 Could not call {cp_text}: {str(e)[:100]}. Please call them directly.")
-        except Exception:  # noqa: BLE001
-            pass
-        return False
-    if cp in invalid:
-        lark_client.post_text(chat_id, f"📞 Could not call {cp_text}: Lark refused (not in this group, or the urgent-call quota "
-                                       f"is used up). Please call them directly.")
-        return False
-    return True
+    """"📞 Call check person" on the 🟡 prompt: no PagerDuty incident exists yet, so this is the same as
+    paging now; PagerDuty then calls on-call through its own rules."""
+    page(incident_id, reason=f"{_mention_card(who)} pressed Call check person.", outcome="human_escalate", actor=who)
 
 
 def _call_duty_pd(pd_id: str, who: str, clicked_message_id: str) -> None:
-    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: the duty person is the linked incident's
-    check person, else policy.yaml defaults.check_person. Lark urgent phone call, no meeting."""
+    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: ask PagerDuty to call the duty account
+    (responder request to PD_DUTY_USER_ID). PagerDuty rings them through their notification rules.
+    The outcome is a line on the card; a failure is a warning line."""
     row = db.get_pd_card(pd_id) or {}
-    inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
-    default = policy_mod.lookup("", "")
-    cp = (inc or {}).get("check_person_open_id") or default.check_person
-    pol = json.loads((inc or {}).get("policy_json") or "{}")
-    chat = row.get("chat_id") or config.FIXED_GROUP_CHAT_ID
-    if not cp:
-        lark_client.post_text(chat, "📞 No duty person is configured (policy.yaml defaults.check_person), so nobody was called.")
+    by = _mention_card(who)
+    if not config.PD_DUTY_USER_ID:
+        _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
+                       extra_line=f"⚠️ Call on duty by {by}: PD_DUTY_USER_ID is not set, nobody called")
         return
-    cp_text = lark_client.mention(cp, pol.get("check_person_name") or default.check_person_name)
-    if _phone_call(chat, cp, cp_text, who, row.get("title") or pd_id) and inc:
-        db.log_decision(int(inc["id"]), "reply", "rang_cp", f"{who} rang {cp} by Lark urgent phone call (PagerDuty card {pd_id})")
+    try:
+        pagerduty.request_responder(pd_id, config.PD_DUTY_USER_ID,
+                                    f"Duty call requested from the Lark card: {row.get('title') or pd_id}")
+    except Exception as e:  # noqa: BLE001
+        log.warning("responder request for %s by %s failed: %s", pd_id, who, e)
+        _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
+                       extra_line=f"⚠️ Call on duty by {by} failed: {str(e)[:100]}")
+        return
+    log.info("card: %s asked PagerDuty to call the duty user on %s", who, pd_id)
+    _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
+                   extra_line=f"📞 PagerDuty is calling the duty account, asked by {by}")
+    if row.get("incident_id"):
+        db.log_decision(int(row["incident_id"]), "pagerduty", "call_duty", f"{who} via card {pd_id}")
 
 
 def _mention_text(open_id: str) -> str:

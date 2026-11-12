@@ -46,6 +46,7 @@ ALERT_PUSH_SECRET = _env("ALERT_PUSH_SECRET")              # test-automation sen
 POST_PD_STATUS_TO_THREAD = _env("POST_PD_STATUS_TO_THREAD", "0") == "1"  # 1 only if Zoho can't reply in thread
 PD_API_KEY = _env("PD_API_KEY")                            # REST token; only for the Lark card buttons
 PD_FROM_EMAIL = _env("PD_FROM_EMAIL")                      # PagerDuty needs a From header on writes
+PD_DUTY_USER_ID = _env("PD_DUTY_USER_ID")                  # PagerDuty user id (P…) of the duty account: "📞 Call on duty" asks PagerDuty to call them
 
 # --- AI --------------------------------------------------------------------------
 # AI_BACKEND: claude_code = run the `claude` CLI headless on the Claude Code subscription (no API key;

@@ -161,20 +161,6 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     return reserve
 
 
-def urgent_phone(message_id: str, open_ids: List[str]) -> List[str]:
-    """PATCH /im/v1/messages/{id}/urgent_phone: Lark rings the users' phones about a message the bot sent.
-    Scope im:message.urgent:phone. Users must be in that chat; each call uses the tenant's urgent-call
-    quota. Returns the ids Lark refused (invalid_user_id_list)."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] urgent_phone %s -> %s", message_id, open_ids)
-        return []
-    r = requests.patch(
-        f"{config.LARK_BASE}/im/v1/messages/{quote(message_id, safe='')}/urgent_phone?user_id_type=open_id",
-        headers=_headers(), json={"user_id_list": open_ids[:200]}, timeout=config.HTTP_TIMEOUT,
-    )
-    return list(_check(r, "urgent_phone").get("invalid_user_id_list") or [])
-
-
 def delete_meeting(reserve_id: str) -> None:
     """Cancel a reservation made by create_meeting (DELETE /vc/v1/reserves/{id}); the join link stops
     working. Called when the incident resolves."""

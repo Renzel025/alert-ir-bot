@@ -118,9 +118,7 @@ def _facts(card):
 
 _prompt_text = _facts            # the decision card's one text block
 
-RUNG: List[Dict[str, Any]] = []
-REFUSE = {"ids": []}
-lark_client.urgent_phone = lambda message_id, open_ids: (RUNG.append({"message": message_id, "who": list(open_ids)}) or list(REFUSE["ids"]))
+
 
 
 # --- scenario A: normal threshold, acknowledged while PagerDuty is DOWN (bot card fallback), resolved as normal
@@ -419,25 +417,13 @@ def test_failed_test_run_pages_at_once_with_no_extra_card():
     POLICY.always_page = False
 
 
-def test_call_check_person_rings_their_phone_via_lark_urgent_call():
+def test_call_check_person_on_the_prompt_pages_now():
+    PD.clear()
     iid = alert("Call-me")                                      # waiting: the 🟡 card has the button
-    RUNG.clear()
     resp = click(iid, "call_cp", MATE)                          # anyone may press it
-    assert resp["toast"]["type"] == "info"
-    msg = _last("post_text")
-    assert msg["text"].startswith("📞") and "is calling" in msg["text"] and f'<at user_id="{CP}">' in msg["text"]
-    assert len(RUNG) == 1 and RUNG[0]["who"] == [CP] and RUNG[0]["message"].startswith("om_")   # urgent call on that message
-    assert [d["decision"] for d in db.decisions(iid) if d["decision"] in ("call_cp", "rang_cp")] == ["call_cp", "rang_cp"]
-    assert not db.get_incident(iid)["meeting_url"]              # a call creates no meeting
-
-
-def test_call_check_person_when_lark_refuses():
-    iid = db.find_open_incident("call-me")["id"]
-    REFUSE["ids"] = [CP]
-    click(iid, "call_cp", MATE)
-    assert "Could not call" in _last("post_text")["text"]
-    assert [d["decision"] for d in db.decisions(iid) if d["decision"] == "rang_cp"] == ["rang_cp"]   # only the first call rang
-    REFUSE["ids"] = []
+    assert resp["toast"]["content"] == "Paging on-call now via PagerDuty…"
+    assert [p["op"] for p in PD] == ["trigger"] and db.get_incident(iid)["status"] == "paged"
+    assert not db.get_incident(iid)["meeting_url"]              # no meeting, no Lark call
 
 
 def test_reply_words():

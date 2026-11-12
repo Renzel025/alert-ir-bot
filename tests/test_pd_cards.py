@@ -215,20 +215,29 @@ def test_escalate_button_moves_pagerduty_to_the_next_level():
     assert _last("update")["card"]["header"]["template"] == "yellow"
 
 
-RUNG = []
-lark_client.urgent_phone = lambda message_id, open_ids: (RUNG.append((message_id, list(open_ids))) or [])
+CALLS = []
+pagerduty.request_responder = lambda incident_id, user_id, message: (CALLS.append((incident_id, user_id, message)) or {"id": "rr1"})
+config.PD_DUTY_USER_ID = "PDUTY01"
 
 
-def test_call_on_duty_rings_the_duty_person_by_lark_urgent_call():
-    import app.policy as policy_mod
-    policy_mod.lookup = lambda rule, sev: policy_mod.Policy(check_person="ou_duty", check_person_name="OSE Duty")
+def test_call_on_duty_asks_pagerduty_to_call_the_duty_account():
     n_meetings = len(MEETING_CALLS)
     resp = click("call_duty")
-    assert resp["toast"]["type"] == "info" and "Calling" in resp["toast"]["content"]
-    assert len(MEETING_CALLS) == n_meetings                            # no meeting: a phone call
-    msg = _last("post_text")
-    assert msg["text"].startswith("📞") and "is calling" in msg["text"] and "ou_duty" in msg["text"] and "card test" in msg["text"]
-    assert RUNG[-1][1] == ["ou_duty"] and RUNG[-1][0].startswith("om_")
+    assert resp["toast"]["content"] == "Asking PagerDuty to call the duty account…"
+    assert CALLS == [("Q1", "PDUTY01", "Duty call requested from the Lark card: card test")]
+    assert len(MEETING_CALLS) == n_meetings                            # no meeting, no Lark call
+    card = _last("update")["card"]
+    assert "📞 PagerDuty is calling the duty account, asked by <at id=ou_me></at>" in _history(card)
+    assert card["header"]["template"] == "yellow"                      # state untouched
+
+
+def test_call_on_duty_failure_is_a_warning_line():
+    def boom(incident_id, user_id, message):
+        raise pagerduty.PagerDutyError("responder_request: HTTP 403 forbidden")
+    pagerduty.request_responder = boom
+    click("call_duty")
+    assert "⚠️ Call on duty by <at id=ou_me></at> failed: responder_request: HTTP 403" in _history(_last("update")["card"])
+    pagerduty.request_responder = lambda incident_id, user_id, message: {"id": "rr2"}
 
 
 def test_snooze_click_then_ack_event_is_noise():
