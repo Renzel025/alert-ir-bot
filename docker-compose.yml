@@ -11,9 +11,6 @@ services:
       TZ: ${TZ:-Asia/Manila}            # card history times ("Triggered 17:23"); containers default to UTC
     volumes:
       - ./data:/data                   # sqlite + policy.yaml survive rebuilds; edit data/policy.yaml live
-      # Recording Analyst videos on the same server, read-only: "Escalate" attaches the run's recording
-      # to the SRE group message (RECORDINGS_DIR=/recordings in .env)
-      - /root/web-recording-analyst/data/videos:/recordings:ro
     ports:
       - "127.0.0.1:8080:8080"          # only Caddy talks to it; not exposed to the internet directly
 

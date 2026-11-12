@@ -161,38 +161,6 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     return reserve
 
 
-def upload_video(path: str, duration_ms: int = 0) -> str:
-    """POST /im/v1/files (file_type mp4) → file_key. Lark caps uploads at 30 MB. `duration_ms` is what
-    Lark shows on the player; without it the bubble says 00:00 (it still plays)."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] upload_video %s", path)
-        return "file_dry"
-    data = {"file_type": "mp4", "file_name": path.rsplit("/", 1)[-1]}
-    if duration_ms > 0:
-        data["duration"] = str(int(duration_ms))
-    with open(path, "rb") as f:
-        r = requests.post(
-            f"{config.LARK_BASE}/im/v1/files", headers=_headers(), data=data,
-            files={"file": (path.rsplit("/", 1)[-1], f, "video/mp4")}, timeout=120,
-        )
-    return str(_check(r, "upload_video").get("file_key") or "")
-
-
-def send_media(chat_id: str, file_key: str, reply_to: str = "") -> Dict[str, Any]:
-    """A video message (msg_type media) in a chat, or as a reply under a message."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] send_media chat=%s file=%s", chat_id, file_key)
-        return {"message_id": f"om_dry_{next(_dry_ids)}"}
-    content = json.dumps({"file_key": file_key})
-    if reply_to:
-        r = requests.post(f"{config.LARK_BASE}/im/v1/messages/{quote(reply_to, safe='')}/reply", headers=_headers(),
-                          json={"msg_type": "media", "content": content}, timeout=config.HTTP_TIMEOUT)
-    else:
-        r = requests.post(f"{config.LARK_BASE}/im/v1/messages?receive_id_type=chat_id", headers=_headers(),
-                          json={"receive_id": chat_id, "msg_type": "media", "content": content}, timeout=config.HTTP_TIMEOUT)
-    return _check(r, "send_media")
-
-
 def delete_meeting(reserve_id: str) -> None:
     """Cancel a reservation made by create_meeting (DELETE /vc/v1/reserves/{id}); the join link stops
     working. Called when the incident resolves."""
