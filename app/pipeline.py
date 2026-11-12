@@ -132,7 +132,8 @@ def handle_alert_push(body: Dict[str, Any]) -> Dict[str, Any]:
                     or str(body.get("summary") or "")[:300],
         instances=[{"step": str(s["step"]), "result": "❌" if s.get("ok") is False else "⚠️", "note": str(s.get("note") or ""),
                     "_raw": f"{s['step']}={'❌' if s.get('ok') is False else '⚠️'} {s.get('note') or ''}".strip()} for s in bad],
-        labels={k: str(v) for k, v in (("game", body.get("game")), ("duration", body.get("duration"))) if v},
+        labels={k: str(v) for k, v in (("game", body.get("game")), ("duration", body.get("duration")),
+                                       ("recording_url", body.get("recording_url"))) if v},
         raw_text=str(body.get("summary") or ""),
         source=str(body.get("source") or "test-automation"),
     )
@@ -1067,6 +1068,59 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         "service": inc.get("service"), "assignees": inc.get("assignments"),
     }
     _paint_pd_card(incident_id, state, by=by, fields=fields, message_id=clicked_message_id, minutes=minutes)
+    if action == "escalate" and config.SRE_CHAT_ID:
+        _notify_sre(incident_id, who)
+
+
+def _notify_sre(pd_id: str, who: str) -> None:
+    """"Escalate" also hands the failure to the SRE group (Renzel 2026-11-12): what failed, the run's own
+    summary sentence, the Recording Analyst link, and the recording itself when the file is reachable
+    (RECORDINGS_DIR, the analyst's video folder mounted read-only). Never raises."""
+    row = db.get_pd_card(pd_id) or {}
+    inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
+    alert = json.loads((inc or {}).get("alert_json") or "{}")
+    title = row.get("title") or pd_id
+    lines = [f"🚨 Escalated by {_mention_text(who)}: {title}"]
+    if alert.get("alert_value"):
+        lines.append(f"Failed: {alert['alert_value']}")
+    if alert.get("raw_text"):
+        lines.append(alert["raw_text"].strip())
+    url = (alert.get("labels") or {}).get("recording_url") or ""
+    if url:
+        lines.append(f"▶ Watch recording: {url}")
+    if row.get("html_url"):
+        lines.append(f"PagerDuty: {row['html_url']}")
+    try:
+        data = lark_client.post_text(config.SRE_CHAT_ID, "\n".join(lines))
+    except Exception as e:  # noqa: BLE001
+        log.warning("SRE notice for %s failed: %s", pd_id, e)
+        return
+    if inc:
+        db.log_decision(int(inc["id"]), "reply", "sre_notified", f"{who} escalated; SRE group told")
+    path = _recording_path(url)
+    if not path:
+        return
+    try:
+        import os
+        if os.path.getsize(path) > 30 * 1024 * 1024:
+            log.info("recording %s over Lark's 30 MB limit; link only", path)
+            return
+        key = lark_client.upload_video(path)
+        lark_client.send_media(config.SRE_CHAT_ID, key, reply_to=str(data.get("message_id") or ""))
+    except Exception as e:  # noqa: BLE001
+        log.warning("recording upload for %s failed: %s (link was posted)", pd_id, e)
+
+
+def _recording_path(recording_url: str) -> str:
+    """Recording Analyst page URL …/r/<slug> → local mp4 path under RECORDINGS_DIR, or "" if unavailable."""
+    import os
+    if not (config.RECORDINGS_DIR and recording_url):
+        return ""
+    m = re.search(r"/r/([A-Za-z0-9_-]+)", recording_url)
+    if not m:
+        return ""
+    path = os.path.join(config.RECORDINGS_DIR, "recordings", f"{m.group(1)}.mp4")
+    return path if os.path.exists(path) else ""
 
 
 # --- helpers ----------------------------------------------------------------------------

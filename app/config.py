@@ -36,6 +36,8 @@ LARK_ENCRYPT_KEY = _env("LARK_ENCRYPT_KEY")                # optional; only if y
 ALERT_CHAT_ID = _env("ALERT_CHAT_ID")                      # group where Provider_test_automation posts
 ALERT_BOT_SENDER_ID = _env("ALERT_BOT_SENDER_ID")          # sender id of that bot (see README)
 FIXED_GROUP_CHAT_ID = _env("FIXED_GROUP_CHAT_ID") or ALERT_CHAT_ID  # same group = reply under the alert
+SRE_CHAT_ID = _env("SRE_CHAT_ID")                          # "Escalate" also posts the failure + recording here (empty = off)
+RECORDINGS_DIR = _env("RECORDINGS_DIR")                    # Recording Analyst video dir mounted into the container (empty = link only)
 LARK_POLL_INTERVAL_SEC = _int("LARK_POLL_INTERVAL_SEC", 0)  # 0 = events only; >0 = also poll the group
 
 # --- PagerDuty (we only send; Jeno owns the PagerDuty side) ---------------------------

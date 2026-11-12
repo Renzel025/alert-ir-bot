@@ -2,6 +2,7 @@
 Run: python -m tests.test_pd_cards   (no pytest, no network, temp database)."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from typing import Any, Dict, List
@@ -204,9 +205,12 @@ def test_meeting_click_creates_one_meeting_and_shows_the_link():
 def test_escalate_button_moves_pagerduty_to_the_next_level():
     LEVELS = []
     pagerduty.escalate = lambda incident_id, level: (LEVELS.append(level) or dict(PD_INC, status="triggered"))
+    config.SRE_CHAT_ID = "oc_sre"
     resp = click("escalate")
     assert resp["toast"]["content"] == "Escalating in PagerDuty…"
     assert LEVELS == [2]                                               # first press: level 2
+    sre = [c for c in LARK_CALLS if c["op"] == "post_text" and c["chat"] == "oc_sre"][-1]["text"]
+    assert sre.startswith("🚨 Escalated by") and "card test" in sre and "PagerDuty: https://pd/Q1" in sre
     card = _last("update")["card"]
     assert card["header"]["template"] == "orange"
     assert _buttons(card) == ["Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]
@@ -240,6 +244,35 @@ def test_call_on_duty_failure_is_a_warning_line():
     click("call_duty")
     assert "⚠️ Call on duty by <at id=ou_me></at> failed: assign: HTTP 402" in _history(_last("update")["card"])
     pagerduty.assign = lambda incident_id, user_id: dict(PD_INC, status="acknowledged")
+
+
+def test_escalate_on_a_linked_card_sends_summary_link_and_video_to_sre():
+    import os, tempfile
+    iid = int(db.create_incident(fingerprint="ta", rule_name="test-automation: CQ9 3079", severity="HIGH", chat_id="oc_test",
+                                 alert_message_id="om_run", pd_dedup_key="ta-1", policy_json="{}",
+                                 alert_json=json.dumps({"alert_value": "Place bet ❌ PLAY never clicked",
+                                                        "raw_text": "Fortune Trio opened and login succeeded, but no bet was placed.",
+                                                        "labels": {"recording_url": "https://recordings.mybot.ink/r/abc123"}}))["id"])
+    db.upsert_pd_card("Q7", incident_id=iid, state="acknowledged", lark_message_id="om_q7", chat_id="oc_test",
+                      title="[HIGH] test-automation: CQ9 3079", html_url="https://pd/Q7")
+    rec = tempfile.mkdtemp(); os.makedirs(os.path.join(rec, "recordings"))
+    open(os.path.join(rec, "recordings", "abc123.mp4"), "wb").write(b"\x00" * 1024)
+    config.RECORDINGS_DIR = rec
+    UP, SENT = [], []
+    lark_client.upload_video = lambda path: (UP.append(path) or "file_key_1")
+    lark_client.send_media = lambda chat, key, reply_to="": (SENT.append((chat, key, reply_to)) or {"message_id": "om_vid"})
+    pagerduty.escalate = lambda incident_id, level: dict(PD_INC, id="Q7", status="triggered")
+    pipeline.handle_card_action({"action": {"value": {"action": "escalate", "incident_id": "Q7"}},
+                                 "operator": {"open_id": "ou_me"}, "context": {"open_message_id": "om_q7"}})
+    _wait_paint()
+    sre = [c for c in LARK_CALLS if c["op"] == "post_text" and c["chat"] == "oc_sre"][-1]["text"]
+    assert "Failed: Place bet ❌ PLAY never clicked" in sre
+    assert "Fortune Trio opened and login succeeded" in sre
+    assert "▶ Watch recording: https://recordings.mybot.ink/r/abc123" in sre
+    assert UP == [os.path.join(rec, "recordings", "abc123.mp4")]
+    assert SENT and SENT[0][0] == "oc_sre" and SENT[0][1] == "file_key_1" and SENT[0][2].startswith("om_")
+    assert [d["decision"] for d in db.decisions(iid)] == ["sre_notified"]
+    config.RECORDINGS_DIR = ""
 
 
 def test_snooze_click_then_ack_event_is_noise():
