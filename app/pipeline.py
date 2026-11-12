@@ -1073,25 +1073,23 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
 
 
 def _notify_sre(pd_id: str, who: str) -> None:
-    """"Escalate" also hands the failure to the SRE group (Renzel 2026-11-12): what failed, the run's own
-    summary sentence, the Recording Analyst link, and the recording itself when the file is reachable
-    (RECORDINGS_DIR, the analyst's video folder mounted read-only). Never raises."""
+    """"Escalate" also hands the failure to the SRE group (Renzel 2026-11-12): a red card with the failed
+    steps, the run's own summary sentence, "Watch recording" and "Open in PagerDuty", then the recording
+    itself as a video reply when the file is reachable (RECORDINGS_DIR, the analyst's video folder mounted
+    read-only). Never raises."""
     row = db.get_pd_card(pd_id) or {}
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
     alert = json.loads((inc or {}).get("alert_json") or "{}")
-    title = row.get("title") or pd_id
-    lines = [f"🚨 Escalated by {_mention_text(who)}: {title}"]
-    if alert.get("alert_value"):
-        lines.append(f"Failed: {alert['alert_value']}")
-    if alert.get("raw_text"):
-        lines.append(alert["raw_text"].strip())
-    url = (alert.get("labels") or {}).get("recording_url") or ""
-    if url:
-        lines.append(f"▶ Watch recording: {url}")
-    if row.get("html_url"):
-        lines.append(f"PagerDuty: {row['html_url']}")
+    labels = alert.get("labels") or {}
+    url = labels.get("recording_url") or ""
+    card = cards.sre_escalation_card(
+        row.get("title") or pd_id, who, alert.get("alert_value") or "", alert.get("raw_text") or "",
+        url, row.get("html_url") or "",
+        provider=(inc or {}).get("rule_name", "").replace("test-automation: ", "") if inc else "",
+        game=labels.get("game") or "",
+    )
     try:
-        data = lark_client.post_text(config.SRE_CHAT_ID, "\n".join(lines))
+        data = lark_client.post_card(config.SRE_CHAT_ID, card)
     except Exception as e:  # noqa: BLE001
         log.warning("SRE notice for %s failed: %s", pd_id, e)
         return
@@ -1105,10 +1103,18 @@ def _notify_sre(pd_id: str, who: str) -> None:
         if os.path.getsize(path) > 30 * 1024 * 1024:
             log.info("recording %s over Lark's 30 MB limit; link only", path)
             return
-        key = lark_client.upload_video(path)
+        key = lark_client.upload_video(path, _duration_ms(labels.get("duration") or ""))
         lark_client.send_media(config.SRE_CHAT_ID, key, reply_to=str(data.get("message_id") or ""))
     except Exception as e:  # noqa: BLE001
         log.warning("recording upload for %s failed: %s (link was posted)", pd_id, e)
+
+
+def _duration_ms(text: str) -> int:
+    """'1m 25s' / '23s' / '76.1s' (the run's duration, which is also the recording's length) → milliseconds."""
+    m = re.match(r"^\s*(?:(\d+)m)?\s*(\d+(?:\.\d+)?)?s?\s*$", text or "")
+    if not m or not (m.group(1) or m.group(2)):
+        return 0
+    return int((int(m.group(1) or 0) * 60 + float(m.group(2) or 0)) * 1000)
 
 
 def _recording_path(recording_url: str) -> str:

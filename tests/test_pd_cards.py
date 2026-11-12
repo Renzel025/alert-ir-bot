@@ -209,8 +209,9 @@ def test_escalate_button_moves_pagerduty_to_the_next_level():
     resp = click("escalate")
     assert resp["toast"]["content"] == "Escalating in PagerDuty…"
     assert LEVELS == [2]                                               # first press: level 2
-    sre = [c for c in LARK_CALLS if c["op"] == "post_text" and c["chat"] == "oc_sre"][-1]["text"]
-    assert sre.startswith("🚨 Escalated by") and "card test" in sre and "PagerDuty: https://pd/Q1" in sre
+    sre = [c for c in LARK_CALLS if c["op"] == "post" and c["chat"] == "oc_sre"][-1]["card"]
+    assert sre["header"]["title"]["content"] == "🚨 card test" and sre["header"]["template"] == "red"
+    assert [a["url"] for a in sre["elements"][-1]["actions"]] == ["https://pd/Q1"]
     card = _last("update")["card"]
     assert card["header"]["template"] == "orange"
     assert _buttons(card) == ["Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]
@@ -250,26 +251,28 @@ def test_escalate_on_a_linked_card_sends_summary_link_and_video_to_sre():
     import os, tempfile
     iid = int(db.create_incident(fingerprint="ta", rule_name="test-automation: CQ9 3079", severity="HIGH", chat_id="oc_test",
                                  alert_message_id="om_run", pd_dedup_key="ta-1", policy_json="{}",
-                                 alert_json=json.dumps({"alert_value": "Place bet ❌ PLAY never clicked",
+                                 alert_json=json.dumps({"alert_value": "Place bet ❌ PLAY never clicked", "labels_duration": "",
                                                         "raw_text": "Fortune Trio opened and login succeeded, but no bet was placed.",
-                                                        "labels": {"recording_url": "https://recordings.mybot.ink/r/abc123"}}))["id"])
+                                                        "labels": {"recording_url": "https://recordings.mybot.ink/r/abc123", "duration": "1m 25s", "game": "Fortune Trio"}}))["id"])
     db.upsert_pd_card("Q7", incident_id=iid, state="acknowledged", lark_message_id="om_q7", chat_id="oc_test",
                       title="[HIGH] test-automation: CQ9 3079", html_url="https://pd/Q7")
     rec = tempfile.mkdtemp(); os.makedirs(os.path.join(rec, "recordings"))
     open(os.path.join(rec, "recordings", "abc123.mp4"), "wb").write(b"\x00" * 1024)
     config.RECORDINGS_DIR = rec
     UP, SENT = [], []
-    lark_client.upload_video = lambda path: (UP.append(path) or "file_key_1")
+    lark_client.upload_video = lambda path, duration_ms=0: (UP.append((path, duration_ms)) or "file_key_1")
     lark_client.send_media = lambda chat, key, reply_to="": (SENT.append((chat, key, reply_to)) or {"message_id": "om_vid"})
-    pagerduty.escalate = lambda incident_id, level: dict(PD_INC, id="Q7", status="triggered")
+    pagerduty.escalate = lambda incident_id, level: dict(PD_INC, id="Q7", status="triggered", html_url="https://pd/Q7",
+                                                         title="[HIGH] test-automation: CQ9 3079")
     pipeline.handle_card_action({"action": {"value": {"action": "escalate", "incident_id": "Q7"}},
                                  "operator": {"open_id": "ou_me"}, "context": {"open_message_id": "om_q7"}})
     _wait_paint()
-    sre = [c for c in LARK_CALLS if c["op"] == "post_text" and c["chat"] == "oc_sre"][-1]["text"]
-    assert "Failed: Place bet ❌ PLAY never clicked" in sre
-    assert "Fortune Trio opened and login succeeded" in sre
-    assert "▶ Watch recording: https://recordings.mybot.ink/r/abc123" in sre
-    assert UP == [os.path.join(rec, "recordings", "abc123.mp4")]
+    sre = [c for c in LARK_CALLS if c["op"] == "post" and c["chat"] == "oc_sre"][-1]["card"]
+    text = "\n".join(e["text"]["content"] for e in sre["elements"] if e["tag"] == "div")
+    assert "**Failed:** Place bet ❌ PLAY never clicked" in text and "**Game:** Fortune Trio" in text
+    assert "Fortune Trio opened and login succeeded" in text
+    assert [a["url"] for a in sre["elements"][-1]["actions"]] == ["https://recordings.mybot.ink/r/abc123", "https://pd/Q7"]
+    assert UP == [(os.path.join(rec, "recordings", "abc123.mp4"), 85000)]       # 1m 25s → 85000 ms on the player
     assert SENT and SENT[0][0] == "oc_sre" and SENT[0][1] == "file_key_1" and SENT[0][2].startswith("om_")
     assert [d["decision"] for d in db.decisions(iid)] == ["sre_notified"]
     config.RECORDINGS_DIR = ""

@@ -161,15 +161,18 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     return reserve
 
 
-def upload_video(path: str) -> str:
-    """POST /im/v1/files (file_type mp4) → file_key. Lark caps uploads at 30 MB."""
+def upload_video(path: str, duration_ms: int = 0) -> str:
+    """POST /im/v1/files (file_type mp4) → file_key. Lark caps uploads at 30 MB. `duration_ms` is what
+    Lark shows on the player; without it the bubble says 00:00 (it still plays)."""
     if config.DRY_RUN:
         log.info("[DRY_RUN] upload_video %s", path)
         return "file_dry"
+    data = {"file_type": "mp4", "file_name": path.rsplit("/", 1)[-1]}
+    if duration_ms > 0:
+        data["duration"] = str(int(duration_ms))
     with open(path, "rb") as f:
         r = requests.post(
-            f"{config.LARK_BASE}/im/v1/files", headers=_headers(),
-            data={"file_type": "mp4", "file_name": path.rsplit("/", 1)[-1]},
+            f"{config.LARK_BASE}/im/v1/files", headers=_headers(), data=data,
             files={"file": (path.rsplit("/", 1)[-1], f, "video/mp4")}, timeout=120,
         )
     return str(_check(r, "upload_video").get("file_key") or "")

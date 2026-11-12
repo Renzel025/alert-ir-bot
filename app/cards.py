@@ -65,6 +65,35 @@ def prompt_card(incident_id: int, rule_name: str, severity: str, what: str, chec
     }
 
 
+# --- the SRE escalation card ("Escalate" pressed on a PagerDuty card) ------------------------
+
+def sre_escalation_card(title: str, by_open_id: str, failed: str, summary: str, recording_url: str,
+                        pd_url: str, provider: str = "", game: str = "") -> Dict[str, Any]:
+    """What the SRE group gets when someone escalates: the facts and two links. The recording itself
+    is posted as a video reply under this card."""
+    who = f"<at id={by_open_id}></at>" if by_open_id else "someone"
+    lines = [f"**Escalated by** {who}"]
+    if provider or game:
+        lines.append(f"**Provider:** {provider or '?'}" + (f" · **Game:** {game}" if game else ""))
+    if failed:
+        lines.append(f"**Failed:** {failed}")
+    elements: List[Dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
+    if summary:
+        elements += [{"tag": "hr"}, {"tag": "div", "text": {"tag": "lark_md", "content": summary.strip()}}]
+    actions: List[Dict[str, Any]] = []
+    if recording_url:
+        actions.append({"tag": "button", "text": _plain("▶ Watch recording"), "type": "primary", "url": recording_url})
+    if pd_url:
+        actions.append({"tag": "button", "text": _plain("Open in PagerDuty"), "type": "default", "url": pd_url})
+    if actions:
+        elements.append({"tag": "action", "actions": actions})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "red", "title": _plain(f"🚨 {title}")},
+        "elements": elements,
+    }
+
+
 # --- the bot's own incident card (before PagerDuty is involved) ---------------------------
 #
 #   state      header   buttons
