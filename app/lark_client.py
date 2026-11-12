@@ -161,31 +161,18 @@ def create_meeting(topic: str, owner_open_id: str, hours: int = 24) -> Dict[str,
     return reserve
 
 
-def get_active_meeting_id(reserve_id: str) -> str:
-    """GET /vc/v1/reserves/{id}/get_active_meeting → the live meeting id, or "" while nobody has joined.
-    A reservation only becomes a meeting once someone joins; the invite call below needs that id."""
+def urgent_phone(message_id: str, open_ids: List[str]) -> List[str]:
+    """PATCH /im/v1/messages/{id}/urgent_phone: Lark rings the users' phones about a message the bot sent.
+    Scope im:message.urgent:phone. Users must be in that chat; each call uses the tenant's urgent-call
+    quota. Returns the ids Lark refused (invalid_user_id_list)."""
     if config.DRY_RUN:
-        return "m_dry"
-    r = requests.get(f"{config.LARK_BASE}/vc/v1/reserves/{quote(reserve_id, safe='')}/get_active_meeting",
-                     headers=_headers(), timeout=config.HTTP_TIMEOUT)
-    data = r.json() if r.text else {}
-    if r.status_code != 200 or data.get("code") != 0:
-        return ""
-    return str(((data.get("data") or {}).get("meeting") or {}).get("id") or "")
-
-
-def invite_to_meeting(meeting_id: str, open_ids: List[str]) -> None:
-    """PATCH /vc/v1/meetings/{id}/invite: ring Lark users into an ongoing meeting (their Lark rings
-    like a call). Same call the P0 bot uses. Scope: the meeting invite permission on the app."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] invite_to_meeting %s -> %s", meeting_id, open_ids)
-        return
+        log.info("[DRY_RUN] urgent_phone %s -> %s", message_id, open_ids)
+        return []
     r = requests.patch(
-        f"{config.LARK_BASE}/vc/v1/meetings/{quote(meeting_id, safe='')}/invite?user_id_type=open_id",
-        headers=_headers(), json={"invitees": [{"id": oid, "user_type": 1} for oid in open_ids[:10]]},
-        timeout=config.HTTP_TIMEOUT,
+        f"{config.LARK_BASE}/im/v1/messages/{quote(message_id, safe='')}/urgent_phone?user_id_type=open_id",
+        headers=_headers(), json={"user_id_list": open_ids[:200]}, timeout=config.HTTP_TIMEOUT,
     )
-    _check(r, "invite_to_meeting")
+    return list(_check(r, "urgent_phone").get("invalid_user_id_list") or [])
 
 
 def delete_meeting(reserve_id: str) -> None:

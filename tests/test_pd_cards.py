@@ -216,21 +216,19 @@ def test_escalate_button_moves_pagerduty_to_the_next_level():
 
 
 RUNG = []
-lark_client.get_active_meeting_id = lambda reserve_id: "m_live"
-lark_client.invite_to_meeting = lambda meeting_id, open_ids: RUNG.append((meeting_id, list(open_ids)))
-config.CALL_RING_POLL_SEC = 0
-config.CALL_RING_WAIT_SEC = 1
+lark_client.urgent_phone = lambda message_id, open_ids: (RUNG.append((message_id, list(open_ids))) or [])
 
 
-def test_call_on_duty_opens_the_meeting_and_rings_the_duty_person():
+def test_call_on_duty_rings_the_duty_person_by_lark_urgent_call():
     import app.policy as policy_mod
     policy_mod.lookup = lambda rule, sev: policy_mod.Policy(check_person="ou_duty", check_person_name="OSE Duty")
     n_meetings = len(MEETING_CALLS)
     resp = click("call_duty")
-    assert resp["toast"]["type"] == "info" and "join it" in resp["toast"]["content"]
-    assert len(MEETING_CALLS) == n_meetings + (0 if db.get_pd_card("Q1")["meeting_url"] else 1)
-    assert RUNG[-1] == ("m_live", ["ou_duty"])
-    assert "📞 Ringing" in _last("post_text")["text"] and 'ou_duty' in _last("post_text")["text"]
+    assert resp["toast"]["type"] == "info" and "Calling" in resp["toast"]["content"]
+    assert len(MEETING_CALLS) == n_meetings                            # no meeting: a phone call
+    msg = _last("post_text")
+    assert msg["text"].startswith("📞") and "is calling" in msg["text"] and "ou_duty" in msg["text"] and "card test" in msg["text"]
+    assert RUNG[-1][1] == ["ou_duty"] and RUNG[-1][0].startswith("om_")
 
 
 def test_snooze_click_then_ack_event_is_noise():

@@ -198,8 +198,7 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
     db.log_decision(iid, "policy", "page" if pol.always_page else "triage", f"matched={pol.matched}", pol.to_dict())
     if pol.always_page:
         page(iid, reason=f"Always-page alert class ({pol.matched}).", outcome="always_page")
-        # the decision card goes up at the same time: facts + "Call check person", no wait, no clock
-        _post_decision_card(iid, incident, alert, pol, clock="", paged=True)
+        # no extra card here (Renzel 2026-11-12): the PagerDuty card that follows is the trigger card
         return "paged_policy"
 
     # 4) AI triage — any failure pages
@@ -229,20 +228,18 @@ def _handle_parsed_alert(msg: Dict[str, Any], alert: alert_parser.Alert) -> str:
         clock = f"No acknowledgement within {pol.wait_minutes} min = I page on-call at {at}."
     else:
         clock = f"If this is still firing {pol.firing_minutes} min after it started, I page on-call at {at}."
-    _post_decision_card(iid, incident, alert, pol, clock=clock, paged=False)
+    _post_decision_card(iid, incident, alert, pol, clock=clock)
     return "waiting"
 
 
 def _post_decision_card(iid: int, incident: Dict[str, Any], alert: alert_parser.Alert, pol: policy_mod.Policy,
-                        clock: str, paged: bool) -> None:
-    """The decision card in the group chat (🟡 prompt, or 🔴 notice when the alert paged at once), with
-    the "Call check person" button. Its message id is remembered: replies to it count as answers, and it is
+                        clock: str) -> None:
+    """The 🟡 prompt card in the group chat, with the "📞 Call check person" button. Its message id is remembered: replies to it count as answers, and it is
     the thread root when there is no alert card. A Lark failure is logged; the clock / page already happened."""
     what = _one_line(alert.alert_value) or f"{alert.firing_count} instance(s)"
     try:
         data = lark_client.post_card(incident.get("chat_id") or config.FIXED_GROUP_CHAT_ID,
-                                     cards.prompt_card(iid, alert.rule_name, alert.severity or "", what, pol.check_person,
-                                                       clock, paged=paged))
+                                     cards.prompt_card(iid, alert.rule_name, alert.severity or "", what, pol.check_person, clock))
         prompt_id = str(data.get("message_id") or "")
     except Exception as e:  # noqa: BLE001
         log.warning("decision card for incident %s failed: %s", iid, e)
@@ -911,7 +908,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     if action == "call_duty":
         threading.Thread(target=_call_duty_pd, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
-        return {"toast": {"type": "info", "content": "Opening the incident call… join it and the duty person is rung."}}
+        return {"toast": {"type": "info", "content": "Calling the duty person's phone via Lark…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
@@ -936,7 +933,7 @@ def _handle_incident_card_action(action: str, incident_id: str, who: str) -> Dic
     threading.Thread(target=_do_incident_action, args=(action, iid, who), daemon=True, name=f"act-inc-{iid}").start()
     return {"toast": {"type": "info", "content": {"bot_resolve": "Resolving as normal…", "bot_page": "Paging on-call…",
                                                    "meeting": "Creating the incident meeting…",
-                                                   "call_cp": "Opening the incident call… join it and the check person is rung."}[action]}}
+                                                   "call_cp": "Calling the check person's phone via Lark…"}[action]}}
 
 
 def _do_incident_action(action: str, incident_id: int, who: str) -> None:
@@ -951,75 +948,54 @@ def _do_incident_action(action: str, incident_id: int, who: str) -> None:
 
 
 def _call_check_person(incident_id: int, who: str) -> None:
-    """"Call check person" on the 🟡 prompt: make sure the incident meeting exists (owner = the clicker),
-    then, as soon as the meeting is live (the clicker joined), ring the check person into it with the
-    Lark invite call, which rings their Lark like a phone call. Same mechanism as the P0 bot."""
+    """"📞 Call check person" on the 🟡 prompt: ring the check person's phone through Lark's urgent call
+    (no meeting). The bot posts a one-line message in the group and escalates it by phone to them."""
     inc = db.get_incident(incident_id) or {}
     cp = inc.get("check_person_open_id") or ""
     pol = json.loads(inc.get("policy_json") or "{}")
     cp_text = lark_client.mention(cp, pol.get("check_person_name") or "")
-    if not inc.get("meeting_url"):
-        _do_incident_meeting(incident_id, who)                  # posts the join-link message too
-        inc = db.get_incident(incident_id) or inc
-    if not inc.get("meeting_reserve_id"):
-        _reply(incident_id, f"📞 Could not open the incident call, so {cp_text} was not rung. Please call them directly.",
-               in_thread=False)
-        return
+    chat = inc.get("chat_id") or config.FIXED_GROUP_CHAT_ID
     db.log_decision(incident_id, "reply", "call_cp", f"{who} pressed Call check person")
-    rang = _ring_into_meeting(inc["meeting_reserve_id"], cp, cp_text, who, lambda t: _reply(incident_id, t, in_thread=False))
-    if rang:
-        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} via meeting {rang}")
+    if _phone_call(chat, cp, cp_text, who, f"{inc.get('rule_name') or 'Alert'}: {_one_line(json.loads(inc.get('alert_json') or '{}').get('alert_value') or '')}"):
+        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} by Lark urgent phone call")
 
 
-def _ring_into_meeting(reserve_id: str, cp: str, cp_text: str, who: str, say) -> str:
-    """Wait for the reservation to become a live meeting (someone joined), then ring `cp` into it.
-    `say(text)` posts in the right place. Returns the meeting id when the ring went out, else ""."""
-    deadline = time.time() + config.CALL_RING_WAIT_SEC
-    meeting_id = ""
-    while time.time() < deadline:
-        try:
-            meeting_id = lark_client.get_active_meeting_id(reserve_id)
-        except Exception as e:  # noqa: BLE001
-            log.warning("get_active_meeting for reserve %s: %s", reserve_id, e)
-        if meeting_id:
-            break
-        time.sleep(config.CALL_RING_POLL_SEC)
-    if not meeting_id:
-        say(f"📞 Nobody joined the incident call within {config.CALL_RING_WAIT_SEC // 60} min, so {cp_text} was not rung. "
-            f"Join it and press the button again.")
-        return ""
+def _phone_call(chat_id: str, cp: str, cp_text: str, who: str, about: str) -> bool:
+    """Lark urgent phone call: post a short message in the group, then PATCH …/urgent_phone on it for `cp`,
+    which rings their phone with Lark's voice notice. Uses the tenant's urgent-call quota. True when it rang."""
     try:
-        lark_client.invite_to_meeting(meeting_id, [cp])
-        say(f"📞 Ringing {cp_text} into the incident call now (started by {_mention_text(who)}).")
-        return meeting_id
+        data = lark_client.post_text(chat_id, f"📞 {_mention_text(who)} is calling {cp_text} about {about}".strip())
+        mid = str(data.get("message_id") or "")
+        invalid = lark_client.urgent_phone(mid, [cp]) if mid else [cp]
     except Exception as e:  # noqa: BLE001
-        log.warning("invite %s into meeting %s failed: %s", cp, meeting_id, e)
-        say(f"📞 Could not ring {cp_text}: {str(e)[:100]}. Please call them directly.")
-        return ""
+        log.warning("urgent phone call to %s failed: %s", cp, e)
+        try:
+            lark_client.post_text(chat_id, f"📞 Could not call {cp_text}: {str(e)[:100]}. Please call them directly.")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    if cp in invalid:
+        lark_client.post_text(chat_id, f"📞 Could not call {cp_text}: Lark refused (not in this group, or the urgent-call quota "
+                                       f"is used up). Please call them directly.")
+        return False
+    return True
 
 
 def _call_duty_pd(pd_id: str, who: str, clicked_message_id: str) -> None:
-    """"Call on duty" on a PagerDuty card: the duty person is the linked incident's check person, else the
-    policy default. Meeting via the card's own Create-meeting path, then the same ring as above."""
+    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: the duty person is the linked incident's
+    check person, else policy.yaml defaults.check_person. Lark urgent phone call, no meeting."""
     row = db.get_pd_card(pd_id) or {}
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
-    cp = (inc or {}).get("check_person_open_id") or policy_mod.lookup("", "").check_person
+    default = policy_mod.lookup("", "")
+    cp = (inc or {}).get("check_person_open_id") or default.check_person
     pol = json.loads((inc or {}).get("policy_json") or "{}")
     chat = row.get("chat_id") or config.FIXED_GROUP_CHAT_ID
-    say = lambda t: lark_client.post_text(chat, t)  # noqa: E731
     if not cp:
-        say("📞 No duty person is configured (policy.yaml defaults.check_person), so nobody was rung.")
+        lark_client.post_text(chat, "📞 No duty person is configured (policy.yaml defaults.check_person), so nobody was called.")
         return
-    cp_text = lark_client.mention(cp, pol.get("check_person_name") or policy_mod.lookup("", "").check_person_name)
-    if not row.get("meeting_url"):
-        _do_meeting(pd_id, who, clicked_message_id)             # creates it, paints the link, posts the join message
-        row = db.get_pd_card(pd_id) or row
-    if not row.get("meeting_reserve_id"):
-        say(f"📞 Could not open the incident call, so {cp_text} was not rung. Please call them directly.")
-        return
-    rang = _ring_into_meeting(row["meeting_reserve_id"], cp, cp_text, who, say)
-    if rang and inc:
-        db.log_decision(int(inc["id"]), "reply", "rang_cp", f"{who} rang {cp} via meeting {rang} (PagerDuty card {pd_id})")
+    cp_text = lark_client.mention(cp, pol.get("check_person_name") or default.check_person_name)
+    if _phone_call(chat, cp, cp_text, who, row.get("title") or pd_id) and inc:
+        db.log_decision(int(inc["id"]), "reply", "rang_cp", f"{who} rang {cp} by Lark urgent phone call (PagerDuty card {pd_id})")
 
 
 def _mention_text(open_id: str) -> str:
