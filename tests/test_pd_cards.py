@@ -215,29 +215,31 @@ def test_escalate_button_moves_pagerduty_to_the_next_level():
     assert _last("update")["card"]["header"]["template"] == "yellow"
 
 
-CALLS = []
-pagerduty.request_responder = lambda incident_id, user_id, message: (CALLS.append((incident_id, user_id, message)) or {"id": "rr1"})
+ASSIGNED = []
+pagerduty.assign = lambda incident_id, user_id: (ASSIGNED.append((incident_id, user_id)) or
+                                                 dict(PD_INC, status="acknowledged", assignments=[{"assignee": {"summary": "OSE Duty"}}]))
 config.PD_DUTY_USER_ID = "PDUTY01"
 
 
-def test_call_on_duty_asks_pagerduty_to_call_the_duty_account():
+def test_call_on_duty_assigns_the_incident_to_the_duty_account():
     n_meetings = len(MEETING_CALLS)
     resp = click("call_duty")
-    assert resp["toast"]["content"] == "Asking PagerDuty to call the duty account…"
-    assert CALLS == [("Q1", "PDUTY01", "Duty call requested from the Lark card: card test")]
+    assert resp["toast"]["content"] == "Handing it to the duty account in PagerDuty…"
+    assert ASSIGNED == [("Q1", "PDUTY01")]
     assert len(MEETING_CALLS) == n_meetings                            # no meeting, no Lark call
     card = _last("update")["card"]
-    assert "📞 PagerDuty is calling the duty account, asked by <at id=ou_me></at>" in _history(card)
-    assert card["header"]["template"] == "yellow"                      # state untouched
+    assert "📞 Assigned to the duty account, PagerDuty is calling them, asked by <at id=ou_me></at>" in _history(card)
+    assert "**Assigned:** OSE Duty" in card["elements"][0]["text"]["content"]
+    assert card["header"]["template"] == "yellow"                      # PagerDuty said still acknowledged
 
 
 def test_call_on_duty_failure_is_a_warning_line():
-    def boom(incident_id, user_id, message):
-        raise pagerduty.PagerDutyError("responder_request: HTTP 403 forbidden")
-    pagerduty.request_responder = boom
+    def boom(incident_id, user_id):
+        raise pagerduty.PagerDutyError("assign: HTTP 402 Required abilities are unavailable")
+    pagerduty.assign = boom
     click("call_duty")
-    assert "⚠️ Call on duty by <at id=ou_me></at> failed: responder_request: HTTP 403" in _history(_last("update")["card"])
-    pagerduty.request_responder = lambda incident_id, user_id, message: {"id": "rr2"}
+    assert "⚠️ Call on duty by <at id=ou_me></at> failed: assign: HTTP 402" in _history(_last("update")["card"])
+    pagerduty.assign = lambda incident_id, user_id: dict(PD_INC, status="acknowledged")
 
 
 def test_snooze_click_then_ack_event_is_noise():

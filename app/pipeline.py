@@ -910,7 +910,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     if action == "call_duty":
         threading.Thread(target=_call_duty_pd, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
-        return {"toast": {"type": "info", "content": "Asking PagerDuty to call the duty account…"}}
+        return {"toast": {"type": "info", "content": "Handing it to the duty account in PagerDuty…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
@@ -956,26 +956,28 @@ def _call_check_person(incident_id: int, who: str) -> None:
 
 
 def _call_duty_pd(pd_id: str, who: str, clicked_message_id: str) -> None:
-    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: ask PagerDuty to call the duty account
-    (responder request to PD_DUTY_USER_ID). PagerDuty rings them through their notification rules.
-    The outcome is a line on the card; a failure is a warning line."""
+    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: assign the incident to the duty account
+    (PD_DUTY_USER_ID); PagerDuty then calls them through their own notification rules. Responder requests
+    would be the nicer API but are not on the Free plan (HTTP 402). The outcome is a line on the card."""
     row = db.get_pd_card(pd_id) or {}
     by = _mention_card(who)
+    state = row.get("state") or "triggered"
     if not config.PD_DUTY_USER_ID:
-        _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
+        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
                        extra_line=f"⚠️ Call on duty by {by}: PD_DUTY_USER_ID is not set, nobody called")
         return
     try:
-        pagerduty.request_responder(pd_id, config.PD_DUTY_USER_ID,
-                                    f"Duty call requested from the Lark card: {row.get('title') or pd_id}")
+        inc = pagerduty.assign(pd_id, config.PD_DUTY_USER_ID)
     except Exception as e:  # noqa: BLE001
-        log.warning("responder request for %s by %s failed: %s", pd_id, who, e)
-        _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
+        log.warning("assign to duty for %s by %s failed: %s", pd_id, who, e)
+        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
                        extra_line=f"⚠️ Call on duty by {by} failed: {str(e)[:100]}")
         return
-    log.info("card: %s asked PagerDuty to call the duty user on %s", who, pd_id)
-    _paint_pd_card(pd_id, row.get("state") or "triggered", message_id=clicked_message_id,
-                   extra_line=f"📞 PagerDuty is calling the duty account, asked by {by}")
+    log.info("card: %s assigned %s to the duty user; PagerDuty notifies them", who, pd_id)
+    fields = {"assignees": inc.get("assignments")}
+    new_state = _PD_STATE.get(str(inc.get("status") or ""), state)     # a reassignment re-triggers an acknowledged incident
+    _paint_pd_card(pd_id, new_state, by=by, fields=fields, message_id=clicked_message_id,
+                   extra_line=f"📞 Assigned to the duty account, PagerDuty is calling them, asked by {by}")
     if row.get("incident_id"):
         db.log_decision(int(row["incident_id"]), "pagerduty", "call_duty", f"{who} via card {pd_id}")
 
