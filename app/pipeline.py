@@ -143,6 +143,8 @@ def handle_alert_push(body: Dict[str, Any]) -> Dict[str, Any]:
            "message_type": "push", "content": json.dumps(body, ensure_ascii=False)}
     result = _handle_parsed_alert(msg, alert)
     inc = db.find_open_incident(alert.fingerprint) if status == "firing" else None
+    log.info("alert push: %s %s (%s) card=%s -> %s incident=%s", alert.rule_name, status, severity or "-",
+             body.get("lark_message_id") or "-", result, int(inc["id"]) if inc else None)
     return {"ok": True, "result": result, "rule": alert.rule_name, "incident_id": int(inc["id"]) if inc else None}
 
 
