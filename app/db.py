@@ -96,6 +96,7 @@ _MIGRATIONS = [
     ("pd_cards", "meeting_url", "TEXT"),    # Lark meeting link created from the card (acknowledged state)
     ("pd_cards", "meeting_reserve_id", "TEXT"),  # to cancel the reservation when the incident resolves
     ("pd_cards", "snoozed_until", "REAL"),       # "Ignore for N min": when it ends the bot announces it, then clears this
+    ("pd_cards", "escalation_level", "INTEGER"), # last level the Escalate button asked PagerDuty for
 ]
 
 

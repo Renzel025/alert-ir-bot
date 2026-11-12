@@ -900,7 +900,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     clicked_message_id = str((event.get("context") or {}).get("open_message_id") or "")
     if value.get("kind") == "incident":                       # the bot's own incident card, no PagerDuty yet
         return _handle_incident_card_action(action, incident_id, who)
-    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting"):
+    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting", "escalate", "call_duty"):
         log.warning("card click ignored: value=%s", value)
         return {"toast": {"type": "error", "content": "Unknown button"}}
     minutes = int(act.get("option") or 0) if action == "snooze" else 0   # the dropdown choice, in minutes
@@ -908,9 +908,14 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
         threading.Thread(target=_do_meeting, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
         return {"toast": {"type": "info", "content": "Creating the incident meeting…"}}
+    if action == "call_duty":
+        threading.Thread(target=_call_duty_pd, args=(incident_id, who, clicked_message_id),
+                         daemon=True, name=f"act-{incident_id}").start()
+        return {"toast": {"type": "info", "content": "Opening the incident call… join it and the duty person is rung."}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
-    label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min"}[action]
+    label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
+             "escalate": "Escalating"}[action]
     return {"toast": {"type": "info", "content": f"{label} in PagerDuty…"}}
 
 
@@ -961,27 +966,60 @@ def _call_check_person(incident_id: int, who: str) -> None:
                in_thread=False)
         return
     db.log_decision(incident_id, "reply", "call_cp", f"{who} pressed Call check person")
+    rang = _ring_into_meeting(inc["meeting_reserve_id"], cp, cp_text, who, lambda t: _reply(incident_id, t, in_thread=False))
+    if rang:
+        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} via meeting {rang}")
+
+
+def _ring_into_meeting(reserve_id: str, cp: str, cp_text: str, who: str, say) -> str:
+    """Wait for the reservation to become a live meeting (someone joined), then ring `cp` into it.
+    `say(text)` posts in the right place. Returns the meeting id when the ring went out, else ""."""
     deadline = time.time() + config.CALL_RING_WAIT_SEC
     meeting_id = ""
     while time.time() < deadline:
         try:
-            meeting_id = lark_client.get_active_meeting_id(inc["meeting_reserve_id"])
+            meeting_id = lark_client.get_active_meeting_id(reserve_id)
         except Exception as e:  # noqa: BLE001
-            log.warning("get_active_meeting for incident %s: %s", incident_id, e)
+            log.warning("get_active_meeting for reserve %s: %s", reserve_id, e)
         if meeting_id:
             break
         time.sleep(config.CALL_RING_POLL_SEC)
     if not meeting_id:
-        _reply(incident_id, f"📞 Nobody joined the incident call within {config.CALL_RING_WAIT_SEC // 60} min, so "
-                            f"{cp_text} was not rung. Join it and press the button again.", in_thread=False)
-        return
+        say(f"📞 Nobody joined the incident call within {config.CALL_RING_WAIT_SEC // 60} min, so {cp_text} was not rung. "
+            f"Join it and press the button again.")
+        return ""
     try:
         lark_client.invite_to_meeting(meeting_id, [cp])
-        db.log_decision(incident_id, "reply", "rang_cp", f"{who} rang {cp} via meeting {meeting_id}")
-        _reply(incident_id, f"📞 Ringing {cp_text} into the incident call now (started by {_mention_text(who)}).", in_thread=False)
+        say(f"📞 Ringing {cp_text} into the incident call now (started by {_mention_text(who)}).")
+        return meeting_id
     except Exception as e:  # noqa: BLE001
-        log.warning("invite check person for incident %s failed: %s", incident_id, e)
-        _reply(incident_id, f"📞 Could not ring {cp_text}: {str(e)[:100]}. Please call them directly.", in_thread=False)
+        log.warning("invite %s into meeting %s failed: %s", cp, meeting_id, e)
+        say(f"📞 Could not ring {cp_text}: {str(e)[:100]}. Please call them directly.")
+        return ""
+
+
+def _call_duty_pd(pd_id: str, who: str, clicked_message_id: str) -> None:
+    """"Call on duty" on a PagerDuty card: the duty person is the linked incident's check person, else the
+    policy default. Meeting via the card's own Create-meeting path, then the same ring as above."""
+    row = db.get_pd_card(pd_id) or {}
+    inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
+    cp = (inc or {}).get("check_person_open_id") or policy_mod.lookup("", "").check_person
+    pol = json.loads((inc or {}).get("policy_json") or "{}")
+    chat = row.get("chat_id") or config.FIXED_GROUP_CHAT_ID
+    say = lambda t: lark_client.post_text(chat, t)  # noqa: E731
+    if not cp:
+        say("📞 No duty person is configured (policy.yaml defaults.check_person), so nobody was rung.")
+        return
+    cp_text = lark_client.mention(cp, pol.get("check_person_name") or policy_mod.lookup("", "").check_person_name)
+    if not row.get("meeting_url"):
+        _do_meeting(pd_id, who, clicked_message_id)             # creates it, paints the link, posts the join message
+        row = db.get_pd_card(pd_id) or row
+    if not row.get("meeting_reserve_id"):
+        say(f"📞 Could not open the incident call, so {cp_text} was not rung. Please call them directly.")
+        return
+    rang = _ring_into_meeting(row["meeting_reserve_id"], cp, cp_text, who, say)
+    if rang and inc:
+        db.log_decision(int(inc["id"]), "reply", "rang_cp", f"{who} rang {cp} via meeting {rang} (PagerDuty card {pd_id})")
 
 
 def _mention_text(open_id: str) -> str:
@@ -1038,9 +1076,19 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
             if row.get("incident_id"):                          # our alert: mute its repeats for the same window
                 db.update_incident(int(row["incident_id"]), muted_until=time.time() + minutes * 60)
                 db.log_decision(int(row["incident_id"]), "reply", "ignore", f"{who} muted {minutes} min via the PagerDuty card")
+        elif action == "escalate":
+            row = db.get_pd_card(incident_id) or {}
+            level = int(row.get("escalation_level") or 1) + 1
+            inc = pagerduty.escalate(incident_id, level)
+            state = "escalated"
+            db.upsert_pd_card(incident_id, escalation_level=level)
         else:
             inc = pagerduty.set_status(incident_id, action)
             state = action
+            if action == "resolved":
+                row = db.get_pd_card(incident_id) or {}
+                if row.get("incident_id"):                      # "Resolve / Normal" on our own alert: teach triage
+                    db.log_outcome(int(row["incident_id"]), "human_normal", actor=who, detail="Resolve / Normal button on the PagerDuty card")
         log.info("card: %s %s on %s confirmed by PagerDuty in %.1fs", who, action, incident_id, time.time() - t0)
     except Exception as e:  # noqa: BLE001
         err = str(e)

@@ -1,27 +1,32 @@
 """The one Lark card we keep per PagerDuty incident, in every state.
 
-    state          header   buttons
-    triggered      red      Acknowledge · Resolve · Ignore for… · Open in PagerDuty
-    escalated      orange   Acknowledge · Resolve · Ignore for… · Open in PagerDuty
-    acknowledged   yellow   Resolve · Create meeting · Open in PagerDuty
-    snoozed        yellow   Resolve · Create meeting · Open in PagerDuty
+    state          header   buttons (2026-11-12)
+    triggered      red      Acknowledge · Resolve / Normal · 📞 Call on duty · Open in PagerDuty
+    acknowledged   yellow   Escalate · Resolve / Normal · 📞 Need to call duty? · Open in PagerDuty
+    snoozed        yellow   same as acknowledged
+    escalated      orange   Resolve / Normal · 📞 Need to call duty? · Open in PagerDuty
     resolved       green    Open in PagerDuty
 
-"Create meeting" shows only while no meeting exists; once one does, the card shows its join link
-instead until resolved (the bot cancels the reservation then, so the link is dropped). Button values round-trip through Lark's
+"Resolve / Normal" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
+human_normal (what triage learns false alarms from).
+
+"Call on duty" opens the incident meeting (owner = clicker) and rings the duty person into it once it is
+live; its join link shows on the card until resolved (the bot cancels the reservation then). "Escalate"
+moves the PagerDuty incident to the next escalation level. Button values round-trip through Lark's
 card.action.trigger callback to pipeline.handle_card_action:
-{"action": "acknowledged" | "resolved" | "snooze" | "meeting", "incident_id": "Q..."}; the Ignore
-dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
+{"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "escalate" | "call_duty", "incident_id": "Q..."};
+the (now unused) Ignore dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
+# Renzel 2026-11-12. "snoozed" (Ignore, now only from the PagerDuty app) keeps the yellow buttons.
 STYLE: Dict[str, Dict[str, Any]] = {
-    "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "ignore"]},
-    "escalated":    {"color": "orange", "buttons": ["ack", "resolve", "ignore"]},
-    "acknowledged": {"color": "yellow", "buttons": ["resolve", "meeting"]},
-    "snoozed":      {"color": "yellow", "buttons": ["resolve", "meeting"]},
+    "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "call_duty"]},
+    "acknowledged": {"color": "yellow", "buttons": ["escalate", "resolve", "call_duty?"]},
+    "snoozed":      {"color": "yellow", "buttons": ["escalate", "resolve", "call_duty?"]},
+    "escalated":    {"color": "orange", "buttons": ["resolve", "call_duty?"]},
     "resolved":     {"color": "green",  "buttons": []},
 }
 
@@ -138,11 +143,17 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
         if b == "ack":
             actions.append(_button("Acknowledge", "acknowledged", incident_id, "primary"))
         elif b == "resolve":
-            actions.append(_button("Resolve", "resolved", incident_id, "default"))
+            actions.append(_button("Resolve / Normal", "resolved", incident_id, "default"))
         elif b == "ignore":
             actions.append(_ignore_select(incident_id))
         elif b == "meeting" and not meeting_url:
             actions.append(_button("Create meeting", "meeting", incident_id, "default"))
+        elif b == "escalate":
+            actions.append(_button("Escalate", "escalate", incident_id, "danger"))
+        elif b == "call_duty":
+            actions.append(_button("📞 Call on duty", "call_duty", incident_id, "danger"))
+        elif b == "call_duty?":
+            actions.append(_button("📞 Need to call duty?", "call_duty", incident_id, "default"))
     actions.append({"tag": "button", "text": _plain("Open in PagerDuty"), "type": "default", "url": html_url or "https://app.pagerduty.com"})
 
     elements: List[Dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(facts)}}]

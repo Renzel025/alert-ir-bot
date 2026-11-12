@@ -122,6 +122,32 @@ def set_status(incident_id: str, status: str) -> Dict[str, Any]:
         raise PagerDutyError(f"set_status: HTTP {r.status_code} {r.text[:300]}")
     return r.json()["incident"]
 
+def escalate(incident_id: str, level: int) -> Dict[str, Any]:
+    """Move the incident to escalation level N of its policy (REST PUT with escalation_level):
+    PagerDuty notifies that level and the incident goes back to triggered."""
+    if level < 1:
+        raise PagerDutyError(f"bad escalation level {level}")
+    if config.DRY_RUN:
+        log.info("[DRY_RUN] pagerduty escalate %s -> level %s", incident_id, level)
+        return {"id": incident_id, "status": "triggered"}
+    if not config.PD_API_KEY or not config.PD_FROM_EMAIL:
+        raise PagerDutyError("PD_API_KEY / PD_FROM_EMAIL not set")
+    r = requests.put(
+        f"https://api.pagerduty.com/incidents/{incident_id}",
+        headers={
+            "Authorization": f"Token token={config.PD_API_KEY}",
+            "Accept": "application/vnd.pagerduty+json;version=2",
+            "Content-Type": "application/json",
+            "From": config.PD_FROM_EMAIL,
+        },
+        json={"incident": {"type": "incident_reference", "escalation_level": level}},
+        timeout=config.HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise PagerDutyError(f"escalate: HTTP {r.status_code} {r.text[:300]}")
+    return r.json()["incident"]
+
+
 def snooze(incident_id: str, minutes: int) -> Dict[str, Any]:
     """'Ignore for N minutes' from the Lark card. PagerDuty only snoozes acknowledged incidents,
     so acknowledge first; when the time is up PagerDuty re-triggers and calls again."""

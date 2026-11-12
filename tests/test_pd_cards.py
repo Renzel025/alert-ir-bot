@@ -123,7 +123,7 @@ def test_trigger_posts_red_card_with_all_buttons():
     assert _last("post")["chat"] == "oc_test"
     card = _last("post")["card"]
     assert card["header"]["template"] == "red"
-    assert _buttons(card) == ["Acknowledge", "Resolve", "Ignore for...", "Open in PagerDuty"]
+    assert _buttons(card) == ["Acknowledge", "Resolve / Normal", "📞 Call on duty", "Open in PagerDuty"]
     assert card["config"]["update_multi"] is True
     assert db.get_pd_card("Q1")["lark_message_id"] == "om_100"
 
@@ -133,7 +133,7 @@ def test_ai_note_is_painted_after_trigger():
     card = LARK_CALLS[-1]["card"]                       # the repaint done by the AI thread
     assert LARK_CALLS[-1]["op"] == "update" and LARK_CALLS[-1]["id"] == "om_100"
     assert "🤖 **AI note (triggered)**\nnote for triggered: card test" == _ai_note(card)
-    assert _buttons(card) == ["Acknowledge", "Resolve", "Ignore for...", "Open in PagerDuty"]  # nothing else changed
+    assert _buttons(card) == ["Acknowledge", "Resolve / Normal", "📞 Call on duty", "Open in PagerDuty"]  # nothing else changed
 
 
 def test_duplicate_trigger_event_adds_no_line_and_no_ai_call():
@@ -147,7 +147,7 @@ def test_escalated_is_orange_same_buttons_and_survives_ai_failure():
     zoho("escalated", agent="")
     card = LARK_CALLS[-1]["card"]
     assert card["header"]["template"] == "orange"
-    assert _buttons(card) == ["Acknowledge", "Resolve", "Ignore for...", "Open in PagerDuty"]
+    assert _buttons(card) == ["Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]
     assert "🟠 Escalated" in _history(card)
     # model failed for this state: the card keeps showing the newest note it has, labelled with its stage
     assert AI_CALLS[-1] == "escalated" and _ai_note(card).startswith("🤖 **AI note (triggered)**")
@@ -159,7 +159,7 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     card = _last("update")["card"]                     # the repaint after PagerDuty confirmed
     assert _last("update")["id"] == "om_100"
     assert card["header"]["template"] == "yellow"
-    assert _buttons(card) == ["Resolve", "Create meeting", "Open in PagerDuty"]
+    assert _buttons(card) == ["Escalate", "Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]
     assert "Acknowledged by <at id=ou_me></at>" in _history(card)
     n = len(LARK_CALLS)
     zoho("acknowledged")                      # PagerDuty echoes the click a second later
@@ -176,7 +176,7 @@ def test_meeting_failure_adds_warning_and_keeps_button():
     card = _last("update")["card"]
     assert card["header"]["template"] == "yellow"                       # state untouched
     assert "⚠️ Meeting by <at id=ou_me></at> failed: create_meeting: code=99991663" in _history(card)
-    assert _buttons(card) == ["Resolve", "Create meeting", "Open in PagerDuty"]   # can retry
+    assert _buttons(card) == ["Escalate", "Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]   # can retry
     assert db.get_pd_card("Q1")["meeting_url"] is None
     lark_client.create_meeting = fake_create_meeting
 
@@ -187,7 +187,7 @@ def test_meeting_click_creates_one_meeting_and_shows_the_link():
     card = _last("update")["card"]
     facts = card["elements"][0]["text"]["content"]
     assert "📞 **Meeting:** [Join the incident call](https://vc.larksuite.com/j/1)" in facts
-    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]           # button gone once a link exists
+    assert _buttons(card) == ["Escalate", "Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]           # button gone once a link exists
     assert "📞 Meeting created by <at id=ou_me></at>" in _history(card)
     assert db.get_pd_card("Q1")["meeting_url"] == "https://vc.larksuite.com/j/1"
     assert AI_CALLS[-1] == "acknowledged"                               # a meeting is not a state: no AI note
@@ -201,16 +201,49 @@ def test_meeting_click_creates_one_meeting_and_shows_the_link():
     assert "https://vc.larksuite.com/j/1" in _last("update")["card"]["elements"][0]["text"]["content"]
 
 
+def test_escalate_button_moves_pagerduty_to_the_next_level():
+    LEVELS = []
+    pagerduty.escalate = lambda incident_id, level: (LEVELS.append(level) or dict(PD_INC, status="triggered"))
+    resp = click("escalate")
+    assert resp["toast"]["content"] == "Escalating in PagerDuty…"
+    assert LEVELS == [2]                                               # first press: level 2
+    card = _last("update")["card"]
+    assert card["header"]["template"] == "orange"
+    assert _buttons(card) == ["Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]
+    assert "🟠 Escalated by <at id=ou_me></at>" in _history(card)
+    zoho("acknowledged")                                               # back to yellow for the tests that follow
+    assert _last("update")["card"]["header"]["template"] == "yellow"
+
+
+RUNG = []
+lark_client.get_active_meeting_id = lambda reserve_id: "m_live"
+lark_client.invite_to_meeting = lambda meeting_id, open_ids: RUNG.append((meeting_id, list(open_ids)))
+config.CALL_RING_POLL_SEC = 0
+config.CALL_RING_WAIT_SEC = 1
+
+
+def test_call_on_duty_opens_the_meeting_and_rings_the_duty_person():
+    import app.policy as policy_mod
+    policy_mod.lookup = lambda rule, sev: policy_mod.Policy(check_person="ou_duty", check_person_name="OSE Duty")
+    n_meetings = len(MEETING_CALLS)
+    resp = click("call_duty")
+    assert resp["toast"]["type"] == "info" and "join it" in resp["toast"]["content"]
+    assert len(MEETING_CALLS) == n_meetings + (0 if db.get_pd_card("Q1")["meeting_url"] else 1)
+    assert RUNG[-1] == ("m_live", ["ou_duty"])
+    assert "📞 Ringing" in _last("post_text")["text"] and 'ou_duty' in _last("post_text")["text"]
+
+
 def test_snooze_click_then_ack_event_is_noise():
     resp = click("snooze", option="30")
     assert resp["toast"]["content"] == "Ignoring for 30 min in PagerDuty…"
     card = _last("update")["card"]
     assert card["header"]["template"] == "yellow"
-    assert _buttons(card) == ["Resolve", "Open in PagerDuty"]           # meeting link already on the card
+    assert _buttons(card) == ["Escalate", "Resolve / Normal", "📞 Need to call duty?", "Open in PagerDuty"]           # meeting link already on the card
     assert "Join the incident call" in card["elements"][0]["text"]["content"]
     assert "Ignored for 30 min by <at id=ou_me></at>" in _history(card)
+    n_ack = _history(card).count("Acknowledged")
     zoho("acknowledged")
-    assert _history(LARK_CALLS[-1]["card"]).count("Acknowledged") == 1
+    assert _history(LARK_CALLS[-1]["card"]).count("Acknowledged") == n_ack      # the ack event after a snooze adds no line
 
 
 def test_ignore_window_end_is_announced_once():
@@ -246,7 +279,7 @@ def test_stale_trigger_after_resolve_is_ignored():
     assert db.get_pd_card("Q1")["state"] == "resolved"
     zoho("reopened")                          # an explicit reopen does go back to red
     assert LARK_CALLS[-1]["card"]["header"]["template"] == "red"
-    assert _buttons(LARK_CALLS[-1]["card"]) == ["Acknowledge", "Resolve", "Ignore for...", "Open in PagerDuty"]
+    assert _buttons(LARK_CALLS[-1]["card"]) == ["Acknowledge", "Resolve / Normal", "📞 Call on duty", "Open in PagerDuty"]
 
 
 def test_click_on_unknown_card_learns_its_message_id():
