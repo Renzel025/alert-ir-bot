@@ -7,9 +7,10 @@
     escalated      orange   same as acknowledged (only PagerDuty itself escalates now; no button)
     resolved       green    Open in PagerDuty
 
+The red card ends with decide_guide(): a fixed "How to decide" block under the AI note.
 "Inform <name>" = the automation itself is the likely problem (element not found, ...): acknowledges in
-PagerDuty, nothing else (name from policy.yaml check_person_name; no group @mention, the check person
-is the one pressing it).
+PagerDuty, then pipeline._inform_check_person posts a group message @mentioning the check person
+(policy.yaml check_person / check_person_name) with the failed steps, the run summary and the recording.
 "Normal / Resolve" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
 human_normal (what triage learns false alarms from). "Send to SRE group" = the service itself is
 broken: sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch recording, Open in
@@ -146,6 +147,16 @@ def incident_card(incident_id: int, state: str, rule_name: str, severity: str = 
     }
 
 
+def decide_guide(inform_name: str = "") -> str:
+    """The fixed "which button" text on the red card (Renzel 2026-11-19). Plain rules, not AI, so it
+    reads the same on every incident; the duty person watches the recording first, then picks."""
+    name = inform_name or "check person"
+    return ("🧭 **How to decide** (watch the recording first)\n"
+            f"📣 **Inform {name}**: the error is inside the automation itself (element not found, script timing, wrong selector)\n"
+            "**Normal / Resolve**: the run only failed because of a maintenance or an enhancement on the game/provider\n"
+            "📨 **Send to SRE group**: the issue is on the service side, or there is really a problem in the game")
+
+
 def _ignore_select(incident_id: str) -> Dict[str, Any]:
     return {
         "tag": "select_static",
@@ -186,6 +197,9 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
     if ai_note:
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"🤖 **AI note ({ai_note_stage or state})**\n{ai_note}"}})
+    if state == "triggered":                       # Renzel 2026-11-19: fixed guide under the note, never AI-written
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": decide_guide(inform_name)}})
     elements.append({"tag": "action", "actions": actions})
     return {
         # update_multi: one shared card for everyone in the group, so a repaint (callback response

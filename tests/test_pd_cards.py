@@ -130,6 +130,11 @@ def test_trigger_posts_red_card_with_all_buttons():
     assert _buttons(card) == ["📣 Inform Renzel", "Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]
     assert card["config"]["update_multi"] is True
     assert db.get_pd_card("Q1")["lark_message_id"] == "om_100"
+    guide = [e["text"]["content"] for e in card["elements"] if e["tag"] == "div" and e["text"]["content"].startswith("🧭")]
+    assert len(guide) == 1 and "📣 **Inform Renzel**: the error is inside the automation" in guide[0]
+    assert "**Normal / Resolve**: the run only failed because of a maintenance or an enhancement" in guide[0]
+    assert "📨 **Send to SRE group**: the issue is on the service side, or there is really a problem in the game" in guide[0]
+    assert card["elements"][-1]["tag"] == "action"                     # the guide sits above the buttons
 
 
 def test_ai_note_is_painted_after_trigger():
@@ -164,7 +169,11 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     card = _last("update")["card"]                     # the repaint after PagerDuty confirmed
     assert _last("update")["id"] == "om_100"
     assert card["header"]["template"] == "yellow"
-    assert len([c for c in LARK_CALLS if c["op"] == "post_text"]) == n_text       # "Inform Renzel" = acknowledge only, no group message
+    assert not any(e["tag"] == "div" and e["text"]["content"].startswith("🧭") for e in card["elements"])   # guide is red-only
+    informs = [c for c in LARK_CALLS if c["op"] == "post_text"][n_text:]          # "Inform Renzel": one group @mention
+    assert len(informs) == 1 and informs[0]["chat"] == "oc_test"
+    assert informs[0]["text"] == ('📣 <at user_id="ou_renzel">Renzel</at> please check: card test\n'
+                                  'This may be an automation problem, not the service (Inform pressed by <at user_id="ou_me">check person</at>).')
     assert _buttons(card) == ["Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]
     assert "Acknowledged by <at id=ou_me></at>" in _history(card)
     n = len(LARK_CALLS)
@@ -243,6 +252,30 @@ def test_send_to_sre_without_a_group_is_a_warning_line():
     assert len([c for c in LARK_CALLS if c["op"] == "post"]) == n     # nothing posted anywhere
     assert "⚠️ Send to SRE group by <at id=ou_me></at>: SRE_CHAT_ID is not set" in _history(_last("update")["card"])
     config.SRE_CHAT_ID = "oc_sre"
+
+
+def test_inform_on_a_linked_card_summarises_the_error():
+    iid = int(db.create_incident(fingerprint="ta8", rule_name="test-automation: DRAGONTIGER 2000", severity="HIGH", chat_id="oc_test",
+                                 alert_message_id="om_run8", pd_dedup_key="ta8-1", policy_json="{}",
+                                 alert_json=json.dumps({"alert_value": "Place bet ❌ PLAY never clicked; Bet history ⚠️ empty",
+                                                        "raw_text": "Dragon Tiger opened, login ok, but no bet was placed.",
+                                                        "labels": {"recording_url": "https://recordings.mybot.ink/r/dt8", "game": "Dragon Tiger"}}))["id"])
+    db.upsert_pd_card("Q8", incident_id=iid, state="triggered", lark_message_id="om_q8", chat_id="oc_test",
+                      title="[HIGH] test-automation: DRAGONTIGER 2000", html_url="https://pd/Q8")
+    pagerduty.set_status = lambda incident_id, status: dict(PD_INC, id="Q8", status=status, title="[HIGH] test-automation: DRAGONTIGER 2000")
+    pipeline.handle_card_action({"action": {"value": {"action": "acknowledged", "incident_id": "Q8"}},
+                                 "operator": {"open_id": "ou_renzel"}, "context": {"open_message_id": "om_q8"}})
+    _wait_paint()
+    msg = _last("post_text")
+    assert msg["chat"] == "oc_test"
+    assert msg["text"] == ('📣 <at user_id="ou_renzel">Renzel</at> please check: [HIGH] test-automation: DRAGONTIGER 2000\n'
+                           'This may be an automation problem, not the service (Inform pressed by <at user_id="ou_renzel">check person</at>).\n'
+                           'Failed: Place bet ❌ PLAY never clicked; Bet history ⚠️ empty\n'
+                           'Summary: Dragon Tiger opened, login ok, but no bet was placed.\n'
+                           'Recording: https://recordings.mybot.ink/r/dt8')
+    assert [d["decision"] for d in db.decisions(iid) if d["stage"] == "reply"] == ["informed"]
+    assert AI_CALLS[-1] == "acknowledged"                               # the card's acknowledged note reads the same error
+    pagerduty.set_status = lambda incident_id, status: dict(PD_INC, status=status)
 
 
 def test_send_to_sre_on_a_linked_card_carries_the_run_facts():

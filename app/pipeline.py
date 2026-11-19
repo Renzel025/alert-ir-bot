@@ -706,9 +706,7 @@ def _render_card(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _check_person_for(row: Dict[str, Any]) -> Tuple[str, str]:
     """(open_id, name) of the check person named on the "📣 Inform <name>" button: the linked incident's,
-    with the name from policy.yaml; a card without a linked incident falls back to the policy defaults.
-    The button itself only acknowledges in PagerDuty: the "📣 ... please check" group message was
-    removed the same day (Renzel 2026-11-19: the check person is the one pressing it)."""
+    with the name from policy.yaml; a card without a linked incident falls back to the policy defaults."""
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
     pol = policy_mod.lookup((inc or {}).get("rule_name") or "", (inc or {}).get("severity") or "")
     open_id = (inc or {}).get("check_person_open_id") or pol.check_person
@@ -1048,6 +1046,37 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         "service": inc.get("service"), "assignees": inc.get("assignments"),
     }
     _paint_pd_card(incident_id, state, by=by, fields=fields, message_id=clicked_message_id, minutes=minutes)
+    if action == "acknowledged":
+        _inform_check_person(incident_id, who)
+
+
+def _inform_check_person(pd_id: str, who: str) -> None:
+    """"📣 Inform <name>" (Renzel 2026-11-19): after acknowledging in PagerDuty, tell the check person in the
+    group that this may be the automation's own problem, with the error summarised: the failed steps and
+    their notes, the run's summary sentence and the recording link. Top-level message so the whole group
+    sees it. The acknowledged AI note on the card adds the model's reading of the same error. Never raises."""
+    row = db.get_pd_card(pd_id) or {}
+    open_id, name = _check_person_for(row)
+    if not open_id:
+        log.warning("inform for %s by %s: no check person in policy.yaml, nobody mentioned", pd_id, who)
+        return
+    inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
+    alert = json.loads((inc or {}).get("alert_json") or "{}")
+    lines = [f"📣 {lark_client.mention(open_id, name)} please check: {row.get('title') or pd_id}",
+             f"This may be an automation problem, not the service (Inform pressed by {_mention_text(who)})."]
+    if alert.get("alert_value"):
+        lines.append(f"Failed: {_one_line(alert['alert_value'])}")
+    if alert.get("raw_text"):
+        lines.append(f"Summary: {_one_line(alert['raw_text'])}")
+    if (alert.get("labels") or {}).get("recording_url"):
+        lines.append(f"Recording: {alert['labels']['recording_url']}")
+    try:
+        lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, "\n".join(lines))
+    except Exception as e:  # noqa: BLE001
+        log.warning("inform message for %s failed: %s", pd_id, e)
+        return
+    if inc:
+        db.log_decision(int(inc["id"]), "reply", "informed", f"{who} informed {open_id} via card {pd_id}")
 
 
 def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:

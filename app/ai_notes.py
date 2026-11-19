@@ -38,8 +38,10 @@ STAGES: Dict[str, str] = {
         "handoff for the next responder: what is known, how long it has been firing, what to do first."
     ),
     "acknowledged": (
-        "STAGE: a responder acknowledged. Write at most 50 words: the first three checks for this alert, "
-        "in order, and what result would mean it is a false alarm."
+        "STAGE: acknowledged; the check person was told this may be the test automation's own problem rather "
+        "than the service. Write at most 60 words: first, the error in plain words from the failed steps and "
+        "their notes (what the automation tried and where it stopped); then the first two things to check in "
+        "the automation; then what result would mean the service itself is broken instead."
     ),
     "resolved": (
         "STAGE: resolved. Write at most 70 words as the incident summary: how long it lasted, who acknowledged "
