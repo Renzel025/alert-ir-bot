@@ -172,7 +172,7 @@ def decide_guide(inform_name: str = "") -> str:
     name = inform_name or "check person"
     return ("🧭 **How to decide** (watch the recording first)\n"
             f"📣 **Inform {name}**: the error is inside the automation itself (element not found, script timing, wrong selector)\n"
-            "**Normal / Resolve**: the run only failed because of a maintenance or an enhancement on the game/provider\n"
+            "**Normal / Resolve**: the run only failed because of a maintenance or an enhancement on the game/provider - proceed also to click resolve once escalated already with SRE\n"
             "📨 **Send to SRE group**: the issue is on the service side, or there is really a problem in the game")
 
 
