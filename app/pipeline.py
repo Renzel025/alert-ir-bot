@@ -19,7 +19,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import ai_notes, ai_triage, alert_parser, cards, config, db, lark_client, pagerduty
 from . import policy as policy_mod
@@ -700,8 +700,17 @@ def _render_card(row: Dict[str, Any]) -> Dict[str, Any]:
         state, row["pd_incident_id"], row.get("title") or row["pd_incident_id"], row.get("html_url") or "",
         urgency=row.get("urgency") or "", service=row.get("service") or "", assignees=row.get("assignees") or "",
         history=[h["line"] for h in history], ai_note=notes.get(note_stage, ""), ai_note_stage=note_stage,
-        meeting_url=row.get("meeting_url") or "",
+        meeting_url=row.get("meeting_url") or "", inform_name=_check_person_for(row)[1],
     )
+
+
+def _check_person_for(row: Dict[str, Any]) -> Tuple[str, str]:
+    """(open_id, name) of the check person the "Inform" button targets: the linked incident's, with the
+    name from policy.yaml; a card without a linked incident falls back to the policy defaults."""
+    inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
+    pol = policy_mod.lookup((inc or {}).get("rule_name") or "", (inc or {}).get("severity") or "")
+    open_id = (inc or {}).get("check_person_open_id") or pol.check_person
+    return open_id, pol.check_person_name
 
 
 def _ai_annotate(pd_id: str, state: str) -> None:
@@ -900,7 +909,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     clicked_message_id = str((event.get("context") or {}).get("open_message_id") or "")
     if value.get("kind") == "incident":                       # the bot's own incident card, no PagerDuty yet
         return _handle_incident_card_action(action, incident_id, who)
-    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting", "escalate", "send_sre"):
+    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting", "send_sre"):
         log.warning("card click ignored: value=%s", value)
         return {"toast": {"type": "error", "content": "Unknown button"}}
     minutes = int(act.get("option") or 0) if action == "snooze" else 0   # the dropdown choice, in minutes
@@ -914,8 +923,10 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
         return {"toast": {"type": "info", "content": "Sending to the SRE group…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
-    label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
-             "escalate": "Escalating"}[action]
+    if action == "acknowledged":
+        name = _check_person_for(db.get_pd_card(incident_id) or {})[1] or "the check person"
+        return {"toast": {"type": "info", "content": f"Informing {name}, acknowledging in PagerDuty…"}}
+    label = {"resolved": "Resolving", "snooze": f"Ignoring for {minutes} min"}[action]
     return {"toast": {"type": "info", "content": f"{label} in PagerDuty…"}}
 
 
@@ -1010,12 +1021,6 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
             if row.get("incident_id"):                          # our alert: mute its repeats for the same window
                 db.update_incident(int(row["incident_id"]), muted_until=time.time() + minutes * 60)
                 db.log_decision(int(row["incident_id"]), "reply", "ignore", f"{who} muted {minutes} min via the PagerDuty card")
-        elif action == "escalate":
-            row = db.get_pd_card(incident_id) or {}
-            level = int(row.get("escalation_level") or 1) + 1
-            inc = pagerduty.escalate(incident_id, level)
-            state = "escalated"
-            db.upsert_pd_card(incident_id, escalation_level=level)
         else:
             inc = pagerduty.set_status(incident_id, action)
             state = action
@@ -1041,6 +1046,28 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         "service": inc.get("service"), "assignees": inc.get("assignments"),
     }
     _paint_pd_card(incident_id, state, by=by, fields=fields, message_id=clicked_message_id, minutes=minutes)
+    if action == "acknowledged":
+        _inform_check_person(incident_id, who)
+
+
+def _inform_check_person(pd_id: str, who: str) -> None:
+    """"📣 Inform <name>" (Renzel 2026-11-19): the failure looks like the automation's own fault, so after
+    acknowledging in PagerDuty, @mention the check person in the group so they look at the run. A
+    top-level message, not a thread reply, so the whole group sees it. Never raises."""
+    row = db.get_pd_card(pd_id) or {}
+    open_id, name = _check_person_for(row)
+    if not open_id:
+        log.warning("inform for %s by %s: no check person in policy.yaml, nobody mentioned", pd_id, who)
+        return
+    text = (f"📣 {lark_client.mention(open_id, name)} please check: {row.get('title') or pd_id} "
+            f"(Inform pressed by {_mention_text(who)}). Watch the run, then Normal / Resolve or Send to SRE group.")
+    try:
+        lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, text)
+    except Exception as e:  # noqa: BLE001
+        log.warning("inform message for %s failed: %s", pd_id, e)
+        return
+    if row.get("incident_id"):
+        db.log_decision(int(row["incident_id"]), "reply", "informed", f"{who} informed {open_id} via card {pd_id}")
 
 
 def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:

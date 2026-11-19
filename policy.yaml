@@ -8,8 +8,8 @@
 
 defaults:
   always_page: false
-  check_person: ""            # Lark open_id (ou_...) of the person to tag when the AI says "can wait"
-  check_person_name: ""       # display name for the @mention
+  check_person: ""            # Lark open_id (ou_...) of the person to tag when the AI says "can wait" and whom "📣 Inform <name>" on the PagerDuty card @mentions
+  check_person_name: ""       # display name for the @mention and the button label ("Inform Renzel")
   wait_minutes: 0             # normal threshold: no must-acknowledge deadline
   firing_minutes: 20          # ...but firing for 20 min -> page
 

@@ -1,33 +1,33 @@
 """The one Lark card we keep per PagerDuty incident, in every state.
 
-    state          header   buttons (2026-11-19)
-    triggered      red      Acknowledge · Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
-    acknowledged   yellow   Escalate · Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
+    state          header   buttons (Renzel 2026-11-19: three buttons, a human decides after watching the video)
+    triggered      red      📣 Inform <check person> · Normal / Resolve · 📨 Send to SRE group · Open in PagerDuty
+    acknowledged   yellow   Normal / Resolve · 📨 Send to SRE group · Open in PagerDuty
     snoozed        yellow   same as acknowledged
-    escalated      orange   Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
+    escalated      orange   same as acknowledged (only PagerDuty itself escalates now; no button)
     resolved       green    Open in PagerDuty
 
-"Resolve / Normal" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
-human_normal (what triage learns false alarms from).
-
-"Send to SRE group" posts sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch
-recording, Open in PagerDuty); PagerDuty is not touched. It replaced "📞 Call on duty" (Renzel 2026-11-19:
-the duty account has no phone number on the Free plan, so the call never rang). "Escalate" moves the
-PagerDuty incident to the next escalation level. Button values round-trip through Lark's
+"Inform <name>" = the automation itself is the likely problem (element not found, ...): acknowledge in
+PagerDuty and @mention the check person (policy.yaml check_person / check_person_name) in the group.
+"Normal / Resolve" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
+human_normal (what triage learns false alarms from). "Send to SRE group" = the service itself is
+broken: sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch recording, Open in
+PagerDuty); PagerDuty is not touched. It replaced "📞 Call on duty" (the duty account has no phone
+number on the Free plan, so the call never rang). Button values round-trip through Lark's
 card.action.trigger callback to pipeline.handle_card_action:
-{"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "escalate" | "send_sre", "incident_id": "Q..."};
+{"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "send_sre", "incident_id": "Q..."};
 the (now unused) Ignore dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-# Renzel 2026-11-12, Send to SRE group instead of Call on duty 2026-11-19. "snoozed" (Ignore, now only
-# from the PagerDuty app) keeps the yellow buttons.
+# Renzel 2026-11-19: Inform / Normal / Send to SRE on red; after Inform the first one drops off.
+# "snoozed" (Ignore, now only from the PagerDuty app) and "escalated" (from the PagerDuty app) keep the yellow buttons.
 STYLE: Dict[str, Dict[str, Any]] = {
     "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "sre"]},
-    "acknowledged": {"color": "yellow", "buttons": ["escalate", "resolve", "sre"]},
-    "snoozed":      {"color": "yellow", "buttons": ["escalate", "resolve", "sre"]},
+    "acknowledged": {"color": "yellow", "buttons": ["resolve", "sre"]},
+    "snoozed":      {"color": "yellow", "buttons": ["resolve", "sre"]},
     "escalated":    {"color": "orange", "buttons": ["resolve", "sre"]},
     "resolved":     {"color": "green",  "buttons": []},
 }
@@ -157,7 +157,7 @@ def _ignore_select(incident_id: str) -> Dict[str, Any]:
 def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
                      urgency: str = "", service: str = "", assignees: str = "",
                      history: List[str] | None = None, ai_note: str = "", ai_note_stage: str = "",
-                     meeting_url: str = "") -> Dict[str, Any]:
+                     meeting_url: str = "", inform_name: str = "") -> Dict[str, Any]:
     style = STYLE.get(state) or STYLE["triggered"]
     facts = [f"**Urgency:** {urgency or '?'} · **Service:** {service or '?'}"]
     if assignees:
@@ -167,15 +167,13 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
     actions: List[Dict[str, Any]] = []
     for b in style["buttons"]:
         if b == "ack":
-            actions.append(_button("Acknowledge", "acknowledged", incident_id, "primary"))
+            actions.append(_button(f"📣 Inform {inform_name or 'check person'}", "acknowledged", incident_id, "primary"))
         elif b == "resolve":
-            actions.append(_button("Resolve / Normal", "resolved", incident_id, "default"))
+            actions.append(_button("Normal / Resolve", "resolved", incident_id, "default"))
         elif b == "ignore":
             actions.append(_ignore_select(incident_id))
         elif b == "meeting" and not meeting_url:
             actions.append(_button("Create meeting", "meeting", incident_id, "default"))
-        elif b == "escalate":
-            actions.append(_button("Escalate", "escalate", incident_id, "danger"))
         elif b == "sre":
             actions.append(_button("📨 Send to SRE group", "send_sre", incident_id, "default"))
     actions.append({"tag": "button", "text": _plain("Open in PagerDuty"), "type": "default", "url": html_url or "https://app.pagerduty.com"})
