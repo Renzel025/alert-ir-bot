@@ -170,10 +170,13 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     assert _last("update")["id"] == "om_100"
     assert card["header"]["template"] == "yellow"
     assert not any(e["tag"] == "div" and e["text"]["content"].startswith("🧭") for e in card["elements"])   # guide is red-only
-    informs = [c for c in LARK_CALLS if c["op"] == "post_text"][n_text:]          # "Inform Renzel": one group @mention
-    assert len(informs) == 1 and informs[0]["chat"] == "oc_test"
-    assert informs[0]["text"] == ('📣 <at user_id="ou_renzel">Renzel</at> please check: card test\n'
-                                  'This may be an automation problem, not the service (Inform pressed by <at user_id="ou_me">check person</at>).')
+    assert len([c for c in LARK_CALLS if c["op"] == "post_text"]) == n_text       # no text message: the Inform notice is a card
+    inform = [c for c in LARK_CALLS if c["op"] == "post" and c["chat"] == "oc_test"][-1]["card"]
+    assert inform["header"]["template"] == "yellow" and inform["header"]["title"]["content"] == "📣 card test"
+    lead = inform["elements"][0]["text"]["content"]
+    assert "📣 <at id=ou_renzel></at> please check: this may be an automation problem, not the service." in lead
+    assert "**Informed by** <at id=ou_me></at>" in lead
+    assert [a["url"] for a in inform["elements"][-1]["actions"]] == ["https://pd/Q1"]       # no run → no recording link
     assert _buttons(card) == ["Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]
     assert "Acknowledged by <at id=ou_me></at>" in _history(card)
     n = len(LARK_CALLS)
@@ -262,17 +265,22 @@ def test_inform_on_a_linked_card_summarises_the_error():
                                                         "labels": {"recording_url": "https://recordings.mybot.ink/r/dt8", "game": "Dragon Tiger"}}))["id"])
     db.upsert_pd_card("Q8", incident_id=iid, state="triggered", lark_message_id="om_q8", chat_id="oc_test",
                       title="[HIGH] test-automation: DRAGONTIGER 2000", html_url="https://pd/Q8")
-    pagerduty.set_status = lambda incident_id, status: dict(PD_INC, id="Q8", status=status, title="[HIGH] test-automation: DRAGONTIGER 2000")
+    pagerduty.set_status = lambda incident_id, status: dict(PD_INC, id="Q8", status=status, html_url="https://pd/Q8",
+                                                          title="[HIGH] test-automation: DRAGONTIGER 2000")
     pipeline.handle_card_action({"action": {"value": {"action": "acknowledged", "incident_id": "Q8"}},
                                  "operator": {"open_id": "ou_renzel"}, "context": {"open_message_id": "om_q8"}})
     _wait_paint()
-    msg = _last("post_text")
-    assert msg["chat"] == "oc_test"
-    assert msg["text"] == ('📣 <at user_id="ou_renzel">Renzel</at> please check: [HIGH] test-automation: DRAGONTIGER 2000\n'
-                           'This may be an automation problem, not the service (Inform pressed by <at user_id="ou_renzel">check person</at>).\n'
-                           'Failed: Place bet ❌ PLAY never clicked; Bet history ⚠️ empty\n'
-                           'Summary: Dragon Tiger opened, login ok, but no bet was placed.\n'
-                           'Recording: https://recordings.mybot.ink/r/dt8')
+    inform = [c for c in LARK_CALLS if c["op"] == "post" and c["chat"] == "oc_test"][-1]["card"]
+    assert inform["header"]["template"] == "yellow"
+    assert inform["header"]["title"]["content"] == "📣 [HIGH] test-automation: DRAGONTIGER 2000"
+    text = "\n".join(e["text"]["content"] for e in inform["elements"] if e["tag"] == "div")
+    assert "📣 <at id=ou_renzel></at> please check: this may be an automation problem, not the service." in text
+    assert "**Informed by** <at id=ou_renzel></at>" in text
+    assert "**Provider:** DRAGONTIGER 2000 · **Game:** Dragon Tiger" in text
+    assert "**Failed:** Place bet ❌ PLAY never clicked; Bet history ⚠️ empty" in text
+    assert "Dragon Tiger opened, login ok, but no bet was placed." in text
+    assert [a["text"]["content"] for a in inform["elements"][-1]["actions"]] == ["▶ Watch recording", "Open in PagerDuty"]
+    assert [a["url"] for a in inform["elements"][-1]["actions"]] == ["https://recordings.mybot.ink/r/dt8", "https://pd/Q8"]
     assert [d["decision"] for d in db.decisions(iid) if d["stage"] == "reply"] == ["informed"]
     assert AI_CALLS[-1] == "acknowledged"                               # the card's acknowledged note reads the same error
     pagerduty.set_status = lambda incident_id, status: dict(PD_INC, status=status)

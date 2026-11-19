@@ -9,8 +9,9 @@
 
 The red card ends with decide_guide(): a fixed "How to decide" block under the AI note.
 "Inform <name>" = the automation itself is the likely problem (element not found, ...): acknowledges in
-PagerDuty, then pipeline._inform_check_person posts a group message @mentioning the check person
-(policy.yaml check_person / check_person_name) with the failed steps, the run summary and the recording.
+PagerDuty, then pipeline._inform_check_person posts inform_card (yellow, same layout as the SRE card)
+@mentioning the check person (policy.yaml check_person / check_person_name) with the failed steps, the
+run summary, ▶ Watch recording and Open in PagerDuty.
 "Normal / Resolve" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
 human_normal (what triage learns false alarms from). "Send to SRE group" = the service itself is
 broken: sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch recording, Open in
@@ -76,7 +77,25 @@ def sre_escalation_card(title: str, by_open_id: str, failed: str, summary: str, 
     """What the SRE group gets when someone presses "Send to SRE group": the facts and two links.
     No video: "▶ Watch recording" opens the Recording Analyst page."""
     who = f"<at id={by_open_id}></at>" if by_open_id else "someone"
-    lines = [f"**Sent by** {who}"]
+    return _failure_card(f"🚨 {title}", "red", [f"**Sent by** {who}"], failed, summary, recording_url, pd_url, provider, game)
+
+
+def inform_card(title: str, check_person_open_id: str, by_open_id: str, failed: str, summary: str,
+                recording_url: str, pd_url: str, provider: str = "", game: str = "") -> Dict[str, Any]:
+    """What the alert group gets when someone presses "📣 Inform <name>" (Renzel 2026-11-19): the same
+    layout as the SRE card, yellow, @mentioning the check person: this may be the automation's own problem."""
+    cp = f"<at id={check_person_open_id}></at>" if check_person_open_id else "check person"
+    who = f"<at id={by_open_id}></at>" if by_open_id else "someone"
+    lead = [f"📣 {cp} please check: this may be an automation problem, not the service.",
+            f"**Informed by** {who}"]
+    return _failure_card(f"📣 {title}", "yellow", lead, failed, summary, recording_url, pd_url, provider, game)
+
+
+def _failure_card(header: str, template: str, lead: List[str], failed: str, summary: str, recording_url: str,
+                  pd_url: str, provider: str = "", game: str = "") -> Dict[str, Any]:
+    """Shared body of the SRE and Inform cards: lead lines, provider/game, failed steps, the run's summary
+    sentence, then ▶ Watch recording / Open in PagerDuty."""
+    lines = list(lead)
     if provider or game:
         lines.append(f"**Provider:** {provider or '?'}" + (f" · **Game:** {game}" if game else ""))
     if failed:
@@ -93,7 +112,7 @@ def sre_escalation_card(title: str, by_open_id: str, failed: str, summary: str, 
         elements.append({"tag": "action", "actions": actions})
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "red", "title": _plain(f"🚨 {title}")},
+        "header": {"template": template, "title": _plain(header)},
         "elements": elements,
     }
 

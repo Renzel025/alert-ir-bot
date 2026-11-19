@@ -1051,10 +1051,11 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
 
 
 def _inform_check_person(pd_id: str, who: str) -> None:
-    """"📣 Inform <name>" (Renzel 2026-11-19): after acknowledging in PagerDuty, tell the check person in the
-    group that this may be the automation's own problem, with the error summarised: the failed steps and
-    their notes, the run's summary sentence and the recording link. Top-level message so the whole group
-    sees it. The acknowledged AI note on the card adds the model's reading of the same error. Never raises."""
+    """"📣 Inform <name>" (Renzel 2026-11-19): after acknowledging in PagerDuty, post a yellow card in the
+    group (same layout as the SRE card, cards.inform_card) @mentioning the check person: this may be the
+    automation's own problem, with the failed steps and their notes, the run's summary sentence, ▶ Watch
+    recording and Open in PagerDuty. The acknowledged AI note on the PagerDuty card adds the model's reading
+    of the same error. Never raises."""
     row = db.get_pd_card(pd_id) or {}
     open_id, name = _check_person_for(row)
     if not open_id:
@@ -1062,18 +1063,17 @@ def _inform_check_person(pd_id: str, who: str) -> None:
         return
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
     alert = json.loads((inc or {}).get("alert_json") or "{}")
-    lines = [f"📣 {lark_client.mention(open_id, name)} please check: {row.get('title') or pd_id}",
-             f"This may be an automation problem, not the service (Inform pressed by {_mention_text(who)})."]
-    if alert.get("alert_value"):
-        lines.append(f"Failed: {_one_line(alert['alert_value'])}")
-    if alert.get("raw_text"):
-        lines.append(f"Summary: {_one_line(alert['raw_text'])}")
-    if (alert.get("labels") or {}).get("recording_url"):
-        lines.append(f"Recording: {alert['labels']['recording_url']}")
+    labels = alert.get("labels") or {}
+    card = cards.inform_card(
+        row.get("title") or pd_id, open_id, who, alert.get("alert_value") or "", alert.get("raw_text") or "",
+        labels.get("recording_url") or "", row.get("html_url") or "",
+        provider=(inc or {}).get("rule_name", "").replace("test-automation: ", "") if inc else "",
+        game=labels.get("game") or "",
+    )
     try:
-        lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, "\n".join(lines))
+        lark_client.post_card(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, card)
     except Exception as e:  # noqa: BLE001
-        log.warning("inform message for %s failed: %s", pd_id, e)
+        log.warning("inform card for %s failed: %s", pd_id, e)
         return
     if inc:
         db.log_decision(int(inc["id"]), "reply", "informed", f"{who} informed {open_id} via card {pd_id}")
