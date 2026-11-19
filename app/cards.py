@@ -7,8 +7,9 @@
     escalated      orange   same as acknowledged (only PagerDuty itself escalates now; no button)
     resolved       green    Open in PagerDuty
 
-"Inform <name>" = the automation itself is the likely problem (element not found, ...): acknowledge in
-PagerDuty and @mention the check person (policy.yaml check_person / check_person_name) in the group.
+"Inform <name>" = the automation itself is the likely problem (element not found, ...): acknowledges in
+PagerDuty, nothing else (name from policy.yaml check_person_name; no group @mention, the check person
+is the one pressing it).
 "Normal / Resolve" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
 human_normal (what triage learns false alarms from). "Send to SRE group" = the service itself is
 broken: sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch recording, Open in

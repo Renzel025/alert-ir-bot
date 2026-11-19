@@ -164,9 +164,7 @@ def test_ack_click_answers_at_once_then_repaints_yellow_then_event_is_silent():
     card = _last("update")["card"]                     # the repaint after PagerDuty confirmed
     assert _last("update")["id"] == "om_100"
     assert card["header"]["template"] == "yellow"
-    informs = [c for c in LARK_CALLS if c["op"] == "post_text"][n_text:]          # "Inform Renzel": one group @mention
-    assert len(informs) == 1 and informs[0]["chat"] == "oc_test"
-    assert informs[0]["text"].startswith('📣 <at user_id="ou_renzel">Renzel</at> please check: card test (Inform pressed by <at user_id="ou_me">')
+    assert len([c for c in LARK_CALLS if c["op"] == "post_text"]) == n_text       # "Inform Renzel" = acknowledge only, no group message
     assert _buttons(card) == ["Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]
     assert "Acknowledged by <at id=ou_me></at>" in _history(card)
     n = len(LARK_CALLS)

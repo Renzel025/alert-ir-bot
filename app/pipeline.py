@@ -705,8 +705,10 @@ def _render_card(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _check_person_for(row: Dict[str, Any]) -> Tuple[str, str]:
-    """(open_id, name) of the check person the "Inform" button targets: the linked incident's, with the
-    name from policy.yaml; a card without a linked incident falls back to the policy defaults."""
+    """(open_id, name) of the check person named on the "📣 Inform <name>" button: the linked incident's,
+    with the name from policy.yaml; a card without a linked incident falls back to the policy defaults.
+    The button itself only acknowledges in PagerDuty: the "📣 ... please check" group message was
+    removed the same day (Renzel 2026-11-19: the check person is the one pressing it)."""
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
     pol = policy_mod.lookup((inc or {}).get("rule_name") or "", (inc or {}).get("severity") or "")
     open_id = (inc or {}).get("check_person_open_id") or pol.check_person
@@ -1046,28 +1048,6 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         "service": inc.get("service"), "assignees": inc.get("assignments"),
     }
     _paint_pd_card(incident_id, state, by=by, fields=fields, message_id=clicked_message_id, minutes=minutes)
-    if action == "acknowledged":
-        _inform_check_person(incident_id, who)
-
-
-def _inform_check_person(pd_id: str, who: str) -> None:
-    """"📣 Inform <name>" (Renzel 2026-11-19): the failure looks like the automation's own fault, so after
-    acknowledging in PagerDuty, @mention the check person in the group so they look at the run. A
-    top-level message, not a thread reply, so the whole group sees it. Never raises."""
-    row = db.get_pd_card(pd_id) or {}
-    open_id, name = _check_person_for(row)
-    if not open_id:
-        log.warning("inform for %s by %s: no check person in policy.yaml, nobody mentioned", pd_id, who)
-        return
-    text = (f"📣 {lark_client.mention(open_id, name)} please check: {row.get('title') or pd_id} "
-            f"(Inform pressed by {_mention_text(who)}). Watch the run, then Normal / Resolve or Send to SRE group.")
-    try:
-        lark_client.post_text(row.get("chat_id") or config.FIXED_GROUP_CHAT_ID, text)
-    except Exception as e:  # noqa: BLE001
-        log.warning("inform message for %s failed: %s", pd_id, e)
-        return
-    if row.get("incident_id"):
-        db.log_decision(int(row["incident_id"]), "reply", "informed", f"{who} informed {open_id} via card {pd_id}")
 
 
 def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:
