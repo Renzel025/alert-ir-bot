@@ -145,47 +145,6 @@ def user_id_for_email(email: str) -> str:
     raise PagerDutyError(f"no PagerDuty user with email {email}")
 
 
-def request_responder(incident_id: str, user_id: str, message: str) -> Dict[str, Any]:
-    """"Call on duty": POST /incidents/{id}/responder_requests. PagerDuty notifies that user through
-    their own notification rules (phone call, SMS, push), the incident stays as it is."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] pagerduty responder request %s -> user %s: %s", incident_id, user_id, message)
-        return {"incident_id": incident_id, "user_id": user_id}
-    if not config.PD_API_KEY or not config.PD_FROM_EMAIL:
-        raise PagerDutyError("PD_API_KEY / PD_FROM_EMAIL not set")
-    body = {
-        "requester_id": user_id_for_email(config.PD_FROM_EMAIL),
-        "message": message[:200],
-        "responder_request_targets": [{"responder_request_target": {"id": user_id, "type": "user_reference"}}],
-    }
-    r = requests.post(f"https://api.pagerduty.com/incidents/{incident_id}/responder_requests",
-                      headers=_rest_headers(), json=body, timeout=config.HTTP_TIMEOUT)
-    if r.status_code not in (200, 201):
-        raise PagerDutyError(f"responder_request: HTTP {r.status_code} {r.text[:300]}")
-    return r.json().get("responder_request") or {}
-
-
-def assign(incident_id: str, user_id: str) -> Dict[str, Any]:
-    """"Call on duty" on the Free plan: reassign the incident to the duty user (REST PUT assignments).
-    PagerDuty notifies them through their notification rules (call / SMS / push). Responder requests
-    (request_responder) are a paid feature: HTTP 402 "Required abilities are unavailable" on Free."""
-    if config.DRY_RUN:
-        log.info("[DRY_RUN] pagerduty assign %s -> user %s", incident_id, user_id)
-        return {"id": incident_id, "status": "triggered"}
-    if not config.PD_API_KEY or not config.PD_FROM_EMAIL:
-        raise PagerDutyError("PD_API_KEY / PD_FROM_EMAIL not set")
-    r = requests.put(
-        f"https://api.pagerduty.com/incidents/{incident_id}",
-        headers=_rest_headers(),
-        json={"incident": {"type": "incident_reference",
-                           "assignments": [{"assignee": {"id": user_id, "type": "user_reference"}}]}},
-        timeout=config.HTTP_TIMEOUT,
-    )
-    if r.status_code != 200:
-        raise PagerDutyError(f"assign: HTTP {r.status_code} {r.text[:300]}")
-    return r.json()["incident"]
-
-
 def escalate(incident_id: str, level: int) -> Dict[str, Any]:
     """Move the incident to escalation level N of its policy (REST PUT with escalation_level):
     PagerDuty notifies that level and the incident goes back to triggered."""

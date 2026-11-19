@@ -900,7 +900,7 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
     clicked_message_id = str((event.get("context") or {}).get("open_message_id") or "")
     if value.get("kind") == "incident":                       # the bot's own incident card, no PagerDuty yet
         return _handle_incident_card_action(action, incident_id, who)
-    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting", "escalate", "call_duty"):
+    if not incident_id or action not in ("acknowledged", "resolved", "snooze", "meeting", "escalate", "send_sre"):
         log.warning("card click ignored: value=%s", value)
         return {"toast": {"type": "error", "content": "Unknown button"}}
     minutes = int(act.get("option") or 0) if action == "snooze" else 0   # the dropdown choice, in minutes
@@ -908,10 +908,10 @@ def handle_card_action(event: Dict[str, Any]) -> Dict[str, Any]:
         threading.Thread(target=_do_meeting, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
         return {"toast": {"type": "info", "content": "Creating the incident meeting…"}}
-    if action == "call_duty":
-        threading.Thread(target=_call_duty_pd, args=(incident_id, who, clicked_message_id),
+    if action == "send_sre":
+        threading.Thread(target=_notify_sre, args=(incident_id, who, clicked_message_id),
                          daemon=True, name=f"act-{incident_id}").start()
-        return {"toast": {"type": "info", "content": "Handing it to the duty account in PagerDuty…"}}
+        return {"toast": {"type": "info", "content": "Sending to the SRE group…"}}
     threading.Thread(target=_do_card_action, args=(action, incident_id, who, minutes, clicked_message_id),
                      daemon=True, name=f"act-{incident_id}").start()
     label = {"acknowledged": "Acknowledging", "resolved": "Resolving", "snooze": f"Ignoring for {minutes} min",
@@ -954,33 +954,6 @@ def _call_check_person(incident_id: int, who: str) -> None:
     """"📞 Call check person" on the 🟡 prompt: no PagerDuty incident exists yet, so this is the same as
     paging now; PagerDuty then calls on-call through its own rules."""
     page(incident_id, reason=f"{_mention_card(who)} pressed Call check person.", outcome="human_escalate", actor=who)
-
-
-def _call_duty_pd(pd_id: str, who: str, clicked_message_id: str) -> None:
-    """"📞 Call on duty" / "Need to call duty?" on a PagerDuty card: assign the incident to the duty account
-    (PD_DUTY_USER_ID); PagerDuty then calls them through their own notification rules. Responder requests
-    would be the nicer API but are not on the Free plan (HTTP 402). The outcome is a line on the card."""
-    row = db.get_pd_card(pd_id) or {}
-    by = _mention_card(who)
-    state = row.get("state") or "triggered"
-    if not config.PD_DUTY_USER_ID:
-        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
-                       extra_line=f"⚠️ Call on duty by {by}: PD_DUTY_USER_ID is not set, nobody called")
-        return
-    try:
-        inc = pagerduty.assign(pd_id, config.PD_DUTY_USER_ID)
-    except Exception as e:  # noqa: BLE001
-        log.warning("assign to duty for %s by %s failed: %s", pd_id, who, e)
-        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
-                       extra_line=f"⚠️ Call on duty by {by} failed: {str(e)[:100]}")
-        return
-    log.info("card: %s assigned %s to the duty user; PagerDuty notifies them", who, pd_id)
-    fields = {"assignees": inc.get("assignments")}
-    new_state = _PD_STATE.get(str(inc.get("status") or ""), state)     # a reassignment re-triggers an acknowledged incident
-    _paint_pd_card(pd_id, new_state, by=by, fields=fields, message_id=clicked_message_id,
-                   extra_line=f"📞 Assigned to the duty account, PagerDuty is calling them, asked by {by}")
-    if row.get("incident_id"):
-        db.log_decision(int(row["incident_id"]), "pagerduty", "call_duty", f"{who} via card {pd_id}")
 
 
 def _mention_text(open_id: str) -> str:
@@ -1068,14 +1041,20 @@ def _do_card_action(action: str, incident_id: str, who: str, minutes: int, click
         "service": inc.get("service"), "assignees": inc.get("assignments"),
     }
     _paint_pd_card(incident_id, state, by=by, fields=fields, message_id=clicked_message_id, minutes=minutes)
-    if action == "escalate" and config.SRE_CHAT_ID:
-        _notify_sre(incident_id, who)
 
 
-def _notify_sre(pd_id: str, who: str) -> None:
-    """"Escalate" also hands the failure to the SRE group (Renzel 2026-11-12): a red card with the failed
-    steps, the run's own summary sentence, "Watch recording" and "Open in PagerDuty". Never raises."""
+def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:
+    """"📨 Send to SRE group" on a PagerDuty card (Renzel 2026-11-19, replaced "Call on duty"): a red card
+    in SRE_CHAT_ID with the failed steps, the run's own summary sentence, "Watch recording" and
+    "Open in PagerDuty". PagerDuty is not touched; the clicked card gets a one-line receipt. Never raises."""
     row = db.get_pd_card(pd_id) or {}
+    by = _mention_card(who)
+    state = row.get("state") or "triggered"
+    if not config.SRE_CHAT_ID:
+        log.warning("send to SRE for %s by %s: SRE_CHAT_ID is not set", pd_id, who)
+        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
+                       extra_line=f"⚠️ Send to SRE group by {by}: SRE_CHAT_ID is not set, nobody told")
+        return
     inc = db.get_incident(int(row["incident_id"])) if row.get("incident_id") else None
     alert = json.loads((inc or {}).get("alert_json") or "{}")
     labels = alert.get("labels") or {}
@@ -1089,9 +1068,13 @@ def _notify_sre(pd_id: str, who: str) -> None:
         lark_client.post_card(config.SRE_CHAT_ID, card)
     except Exception as e:  # noqa: BLE001
         log.warning("SRE notice for %s failed: %s", pd_id, e)
+        _paint_pd_card(pd_id, state, message_id=clicked_message_id,
+                       extra_line=f"⚠️ Send to SRE group by {by} failed: {str(e)[:100]}")
         return
+    log.info("card: %s sent %s to the SRE group", who, pd_id)
+    _paint_pd_card(pd_id, state, message_id=clicked_message_id, extra_line=f"📨 Sent to the SRE group by {by}")
     if inc:
-        db.log_decision(int(inc["id"]), "reply", "sre_notified", f"{who} escalated; SRE group told")
+        db.log_decision(int(inc["id"]), "reply", "sre_notified", f"{who} via card {pd_id}; SRE group told")
 
 
 # --- helpers ----------------------------------------------------------------------------

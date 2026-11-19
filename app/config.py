@@ -36,7 +36,7 @@ LARK_ENCRYPT_KEY = _env("LARK_ENCRYPT_KEY")                # optional; only if y
 ALERT_CHAT_ID = _env("ALERT_CHAT_ID")                      # group where Provider_test_automation posts
 ALERT_BOT_SENDER_ID = _env("ALERT_BOT_SENDER_ID")          # sender id of that bot (see README)
 FIXED_GROUP_CHAT_ID = _env("FIXED_GROUP_CHAT_ID") or ALERT_CHAT_ID  # same group = reply under the alert
-SRE_CHAT_ID = _env("SRE_CHAT_ID")                          # "Escalate" also posts the failure + recording here (empty = off)
+SRE_CHAT_ID = _env("SRE_CHAT_ID")                          # "📨 Send to SRE group" posts the failure + recording link here (empty = button warns)
 LARK_POLL_INTERVAL_SEC = _int("LARK_POLL_INTERVAL_SEC", 0)  # 0 = events only; >0 = also poll the group
 
 # --- PagerDuty (we only send; Jeno owns the PagerDuty side) ---------------------------
@@ -47,7 +47,6 @@ ALERT_PUSH_SECRET = _env("ALERT_PUSH_SECRET")              # test-automation sen
 POST_PD_STATUS_TO_THREAD = _env("POST_PD_STATUS_TO_THREAD", "0") == "1"  # 1 only if Zoho can't reply in thread
 PD_API_KEY = _env("PD_API_KEY")                            # REST token; only for the Lark card buttons
 PD_FROM_EMAIL = _env("PD_FROM_EMAIL")                      # PagerDuty needs a From header on writes
-PD_DUTY_USER_ID = _env("PD_DUTY_USER_ID")                  # PagerDuty user id (P…) of the duty account: "📞 Call on duty" asks PagerDuty to call them
 
 # --- AI --------------------------------------------------------------------------
 # AI_BACKEND: claude_code = run the `claude` CLI headless on the Claude Code subscription (no API key;

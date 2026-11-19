@@ -1,32 +1,34 @@
 """The one Lark card we keep per PagerDuty incident, in every state.
 
-    state          header   buttons (2026-11-12)
-    triggered      red      Acknowledge · Resolve / Normal · 📞 Call on duty · Open in PagerDuty
-    acknowledged   yellow   Escalate · Resolve / Normal · 📞 Need to call duty? · Open in PagerDuty
+    state          header   buttons (2026-11-19)
+    triggered      red      Acknowledge · Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
+    acknowledged   yellow   Escalate · Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
     snoozed        yellow   same as acknowledged
-    escalated      orange   Resolve / Normal · 📞 Need to call duty? · Open in PagerDuty
+    escalated      orange   Resolve / Normal · 📨 Send to SRE group · Open in PagerDuty
     resolved       green    Open in PagerDuty
 
 "Resolve / Normal" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
 human_normal (what triage learns false alarms from).
 
-"Call on duty" opens the incident meeting (owner = clicker) and rings the duty person into it once it is
-live; its join link shows on the card until resolved (the bot cancels the reservation then). "Escalate"
-moves the PagerDuty incident to the next escalation level. Button values round-trip through Lark's
+"Send to SRE group" posts sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch
+recording, Open in PagerDuty); PagerDuty is not touched. It replaced "📞 Call on duty" (Renzel 2026-11-19:
+the duty account has no phone number on the Free plan, so the call never rang). "Escalate" moves the
+PagerDuty incident to the next escalation level. Button values round-trip through Lark's
 card.action.trigger callback to pipeline.handle_card_action:
-{"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "escalate" | "call_duty", "incident_id": "Q..."};
+{"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "escalate" | "send_sre", "incident_id": "Q..."};
 the (now unused) Ignore dropdown adds `option` = minutes. Keep this the only place that knows what the card looks like.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-# Renzel 2026-11-12. "snoozed" (Ignore, now only from the PagerDuty app) keeps the yellow buttons.
+# Renzel 2026-11-12, Send to SRE group instead of Call on duty 2026-11-19. "snoozed" (Ignore, now only
+# from the PagerDuty app) keeps the yellow buttons.
 STYLE: Dict[str, Dict[str, Any]] = {
-    "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "call_duty"]},
-    "acknowledged": {"color": "yellow", "buttons": ["escalate", "resolve", "call_duty?"]},
-    "snoozed":      {"color": "yellow", "buttons": ["escalate", "resolve", "call_duty?"]},
-    "escalated":    {"color": "orange", "buttons": ["resolve", "call_duty?"]},
+    "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "sre"]},
+    "acknowledged": {"color": "yellow", "buttons": ["escalate", "resolve", "sre"]},
+    "snoozed":      {"color": "yellow", "buttons": ["escalate", "resolve", "sre"]},
+    "escalated":    {"color": "orange", "buttons": ["resolve", "sre"]},
     "resolved":     {"color": "green",  "buttons": []},
 }
 
@@ -65,14 +67,14 @@ def prompt_card(incident_id: int, rule_name: str, severity: str, what: str, chec
     }
 
 
-# --- the SRE escalation card ("Escalate" pressed on a PagerDuty card) ------------------------
+# --- the SRE card ("📨 Send to SRE group" pressed on a PagerDuty card) -------------------------
 
 def sre_escalation_card(title: str, by_open_id: str, failed: str, summary: str, recording_url: str,
                         pd_url: str, provider: str = "", game: str = "") -> Dict[str, Any]:
-    """What the SRE group gets when someone escalates: the facts and two links. The recording itself
-    is posted as a video reply under this card."""
+    """What the SRE group gets when someone presses "Send to SRE group": the facts and two links.
+    No video: "▶ Watch recording" opens the Recording Analyst page."""
     who = f"<at id={by_open_id}></at>" if by_open_id else "someone"
-    lines = [f"**Escalated by** {who}"]
+    lines = [f"**Sent by** {who}"]
     if provider or game:
         lines.append(f"**Provider:** {provider or '?'}" + (f" · **Game:** {game}" if game else ""))
     if failed:
@@ -174,10 +176,8 @@ def pd_incident_card(state: str, incident_id: str, title: str, html_url: str,
             actions.append(_button("Create meeting", "meeting", incident_id, "default"))
         elif b == "escalate":
             actions.append(_button("Escalate", "escalate", incident_id, "danger"))
-        elif b == "call_duty":
-            actions.append(_button("📞 Call on duty", "call_duty", incident_id, "danger"))
-        elif b == "call_duty?":
-            actions.append(_button("📞 Need to call duty?", "call_duty", incident_id, "default"))
+        elif b == "sre":
+            actions.append(_button("📨 Send to SRE group", "send_sre", incident_id, "default"))
     actions.append({"tag": "button", "text": _plain("Open in PagerDuty"), "type": "default", "url": html_url or "https://app.pagerduty.com"})
 
     elements: List[Dict[str, Any]] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(facts)}}]
