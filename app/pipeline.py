@@ -1082,7 +1082,8 @@ def _inform_check_person(pd_id: str, who: str) -> None:
 def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:
     """"📨 Send to SRE group" on a PagerDuty card (Renzel 2026-11-19, replaced "Call on duty"): a red card
     in SRE_CHAT_ID with the failed steps, the run's own summary sentence, "Watch recording" and
-    "Open in PagerDuty". PagerDuty is not touched; the clicked card gets a one-line receipt. Never raises."""
+    "Open in PagerDuty". This is the escalation decision: the clicked card turns orange ("escalated")
+    with a receipt line. PagerDuty is not touched (acknowledge / resolve still go through it). Never raises."""
     row = db.get_pd_card(pd_id) or {}
     by = _mention_card(who)
     state = row.get("state") or "triggered"
@@ -1108,7 +1109,7 @@ def _notify_sre(pd_id: str, who: str, clicked_message_id: str = "") -> None:
                        extra_line=f"⚠️ Send to SRE group by {by} failed: {str(e)[:100]}")
         return
     log.info("card: %s sent %s to the SRE group", who, pd_id)
-    _paint_pd_card(pd_id, state, message_id=clicked_message_id, extra_line=f"📨 Sent to the SRE group by {by}")
+    _paint_pd_card(pd_id, "escalated", by=by, message_id=clicked_message_id, extra_line=f"📨 Sent to the SRE group by {by}")
     if inc:
         db.log_decision(int(inc["id"]), "reply", "sre_notified", f"{who} via card {pd_id}; SRE group told")
 

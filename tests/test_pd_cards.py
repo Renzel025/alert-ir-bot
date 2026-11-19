@@ -243,9 +243,12 @@ def test_send_to_sre_posts_the_card_and_leaves_pagerduty_alone():
     assert "**Sent by** <at id=ou_me></at>" in sre["elements"][0]["text"]["content"]
     assert [a["url"] for a in sre["elements"][-1]["actions"]] == ["https://pd/Q1"]       # no run → no recording link
     card = _last("update")["card"]
-    assert card["header"]["template"] == "yellow"                      # state untouched
+    assert card["header"]["template"] == "orange"                      # Send to SRE = the escalation decision
+    assert "🟠 Escalated by <at id=ou_me></at>" in _history(card)
     assert "📨 Sent to the SRE group by <at id=ou_me></at>" in _history(card)
-    assert _buttons(card) == ["Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]   # can send again (yellow: Inform already done)
+    assert _buttons(card) == ["Normal / Resolve", "📨 Send to SRE group", "Open in PagerDuty"]   # can send again
+    assert db.get_pd_card("Q1")["state"] == "escalated"
+    assert AI_CALLS[-1] == "escalated"                                 # handoff note for SRE
 
 
 def test_send_to_sre_without_a_group_is_a_warning_line():
@@ -307,6 +310,7 @@ def test_send_to_sre_on_a_linked_card_carries_the_run_facts():
     assert [d["decision"] for d in db.decisions(iid) if d["stage"] == "reply"] == ["sre_notified"]   # (+ the AI note of the first paint)
     assert not any(c["op"] in ("reply", "post_text") and c.get("chat") == "oc_sre" for c in LARK_CALLS)   # card only, no video reply
     receipt = [c for c in LARK_CALLS if c["op"] == "update" and c["id"] == "om_q7"][0]["card"]
+    assert receipt["header"]["template"] == "orange"                   # yellow → orange: the escalation decision
     assert "📨 Sent to the SRE group by <at id=ou_me></at>" in _history(receipt)
 
 

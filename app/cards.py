@@ -4,7 +4,7 @@
     triggered      red      📣 Inform <check person> · Normal / Resolve · 📨 Send to SRE group · Open in PagerDuty
     acknowledged   yellow   Normal / Resolve · 📨 Send to SRE group · Open in PagerDuty
     snoozed        yellow   same as acknowledged
-    escalated      orange   same as acknowledged (only PagerDuty itself escalates now; no button)
+    escalated      orange   Normal / Resolve · 📨 Send to SRE group · Open in PagerDuty  (= Send to SRE group was pressed)
     resolved       green    Open in PagerDuty
 
 The red card ends with decide_guide(): a fixed "How to decide" block under the AI note.
@@ -15,7 +15,7 @@ run summary, ▶ Watch recording and Open in PagerDuty.
 "Normal / Resolve" resolves in PagerDuty and, for a card linked to one of our alerts, records outcome
 human_normal (what triage learns false alarms from). "Send to SRE group" = the service itself is
 broken: sre_escalation_card to SRE_CHAT_ID (failed steps, the run's summary, Watch recording, Open in
-PagerDuty); PagerDuty is not touched. It replaced "📞 Call on duty" (the duty account has no phone
+PagerDuty) and the card turns orange ("escalated"); PagerDuty is not touched. It replaced "📞 Call on duty" (the duty account has no phone
 number on the Free plan, so the call never rang). Button values round-trip through Lark's
 card.action.trigger callback to pipeline.handle_card_action:
 {"action": "acknowledged" | "resolved" | "snooze" | "meeting" | "send_sre", "incident_id": "Q..."};
@@ -26,7 +26,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 # Renzel 2026-11-19: Inform / Normal / Send to SRE on red; after Inform the first one drops off.
-# "snoozed" (Ignore, now only from the PagerDuty app) and "escalated" (from the PagerDuty app) keep the yellow buttons.
+# "snoozed" (Ignore, now only from the PagerDuty app) keeps the yellow buttons. "escalated" (orange) is the
+# "Send to SRE group" decision (Renzel 2026-11-19): the card turns orange when that button is pressed.
 STYLE: Dict[str, Dict[str, Any]] = {
     "triggered":    {"color": "red",    "buttons": ["ack", "resolve", "sre"]},
     "acknowledged": {"color": "yellow", "buttons": ["resolve", "sre"]},

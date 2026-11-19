@@ -34,8 +34,9 @@ STAGES: Dict[str, str] = {
         "the two most likely causes given these facts, and the first two or three checks to run."
     ),
     "escalated": (
-        "STAGE: escalated to the next level because nobody acknowledged in time. Write at most 60 words as a "
-        "handoff for the next responder: what is known, how long it has been firing, what to do first."
+        "STAGE: a responder sent this to the SRE group because the service or the game itself looks broken, "
+        "not the test automation. Write at most 60 words as a handoff for SRE: what the run saw and where it "
+        "failed, how long it has been firing, what to check on the service side first."
     ),
     "acknowledged": (
         "STAGE: acknowledged; the check person was told this may be the test automation's own problem rather "
